@@ -1,0 +1,25 @@
+<!DOCTYPE html>
+<html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>清除缓存</title></head>
+<body style="font-family:system-ui;text-align:center;padding:60px 20px;background:#F8FAFC">
+<h2>正在清除缓存...</h2>
+<p id="msg">请稍候</p>
+<script>
+(async()=>{
+  const m=document.getElementById('msg');
+  try{
+    if('serviceWorker' in navigator){
+      const regs=await navigator.serviceWorker.getRegistrations();
+      for(const r of regs) await r.unregister();
+      m.textContent='Service Worker 已清除 ('+regs.length+' 个)';
+    }
+    const names=await caches.keys();
+    for(const n of names) await caches.delete(n);
+    m.textContent='缓存已全部清除！3秒后跳转...';
+    setTimeout(()=>{ window.location.href='/'; },3000);
+  }catch(e){
+    m.textContent='清除失败: '+e.message;
+  }
+})();
+</script>
+</body></html>
