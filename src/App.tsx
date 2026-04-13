@@ -19,6 +19,7 @@ const tabs: { id: Tab; label: string; icon: string }[] = [
 function Settings({ onReconfigure }: { onReconfigure: () => void }) {
   const [testResult, setTestResult] = useState<string[]>([])
   const [testing, setTesting] = useState(false)
+  const [cacheCleared, setCacheCleared] = useState(false)
   const url = localStorage.getItem('sb_url') || ''
   const hasKey = !!localStorage.getItem('sb_key')
   const [geminiKey, setGeminiKey] = useState(localStorage.getItem('gemini_api_key') || '')
@@ -122,21 +123,22 @@ function Settings({ onReconfigure }: { onReconfigure: () => void }) {
 
       <div className="bg-white rounded-2xl p-4 border border-[var(--color-border)]">
         <div className="text-sm font-semibold text-[var(--color-k)] mb-3">缓存</div>
-        <button onClick={() => {
-          sessionStorage.setItem('active_tab', 'settings')
+        <button onClick={async () => {
+          setCacheCleared(false)
           if ('serviceWorker' in navigator) {
-            navigator.serviceWorker.getRegistrations().then(regs => {
-              regs.forEach(r => r.unregister())
-            })
-            caches.keys().then(names => {
-              names.forEach(n => caches.delete(n))
-            })
+            const regs = await navigator.serviceWorker.getRegistrations()
+            await Promise.all(regs.map(r => r.unregister()))
+            const names = await caches.keys()
+            await Promise.all(names.map(n => caches.delete(n)))
           }
-          window.location.reload()
+          setCacheCleared(true)
         }}
           className="w-full py-3 rounded-xl border border-[var(--color-border)] text-[var(--color-k)] font-semibold text-sm">
-          🔄 清除缓存并刷新
+          🔄 清除缓存
         </button>
+        {cacheCleared && (
+          <div className="mt-2 text-center text-xs text-green-600 font-medium">✅ 缓存已清除，下次加载将获取最新版本</div>
+        )}
       </div>
     </div>
   )
@@ -144,11 +146,7 @@ function Settings({ onReconfigure }: { onReconfigure: () => void }) {
 
 export default function App() {
   const [ready, setReady] = useState(isConfigured())
-  const [tab, setTab] = useState<Tab>(() => {
-    const saved = sessionStorage.getItem('active_tab') as Tab | null
-    if (saved) { sessionStorage.removeItem('active_tab'); return saved }
-    return 'capture'
-  })
+  const [tab, setTab] = useState<Tab>('capture')
   const [refreshKey, setRefreshKey] = useState(0)
 
   if (!ready) {
