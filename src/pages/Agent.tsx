@@ -107,23 +107,28 @@ export default function Agent() {
       remindersRef.current = r
     }).catch(() => {})
 
-    // 每 60 秒检查是否有到期提醒
-    const timer = setInterval(async () => {
+    // ── 核心检查函数：时间窗口匹配（±3分钟） ──
+    const checkReminders = async () => {
       const list = remindersRef.current
       if (list.length === 0) return
 
       const now = new Date()
-      const hh = String(now.getHours()).padStart(2, '0')
-      const mm = String(now.getMinutes()).padStart(2, '0')
-      const currentTime = `${hh}:${mm}`
+      const nowMinutes = now.getHours() * 60 + now.getMinutes() // 当前分钟数
       const currentDay = now.getDay()
       const today = now.toISOString().split('T')[0]
 
       for (const r of list) {
         if (!r.enabled) continue
-        if (r.remind_time !== currentTime) continue
         if (!r.repeat_days.includes(currentDay)) continue
         if (r.last_triggered_date === today) continue
+
+        // 解析提醒时间为分钟数
+        const [hh, mm] = r.remind_time.split(':').map(Number)
+        const reminderMinutes = hh * 60 + mm
+
+        // 时间窗口：提醒时间 ≤ 当前时间 ≤ 提醒时间+3分钟
+        const diff = nowMinutes - reminderMinutes
+        if (diff < 0 || diff > 3) continue
 
         // 触发浏览器系统通知
         if ('Notification' in window && Notification.permission === 'granted') {
@@ -152,7 +157,6 @@ export default function Agent() {
         const fresh = await fetchNotifications(true)
         if (fresh.length > 0) {
           setNotifications(fresh)
-          // 对新通知也弹系统通知
           for (const n of fresh) {
             if ('Notification' in window && Notification.permission === 'granted') {
               new Notification(n.title, {
@@ -164,9 +168,26 @@ export default function Agent() {
           }
         }
       } catch { /* ignore */ }
-    }, 60000) // 每分钟检查
+    }
 
-    return () => clearInterval(timer)
+    // 每 15 秒检查一次（对抗浏览器节流）
+    const timer = setInterval(checkReminders, 15000)
+
+    // 页面回到前台时立即检查（手机切回浏览器时）
+    const onVisible = () => {
+      if (document.visibilityState === 'visible') {
+        checkReminders()
+      }
+    }
+    document.addEventListener('visibilitychange', onVisible)
+
+    // 首次立即检查
+    checkReminders()
+
+    return () => {
+      clearInterval(timer)
+      document.removeEventListener('visibilitychange', onVisible)
+    }
   }, [])
 
   // ── 提醒管理函数 ──
