@@ -21,6 +21,8 @@ function Settings({ onReconfigure }: { onReconfigure: () => void }) {
   const [testing, setTesting] = useState(false)
   const url = localStorage.getItem('sb_url') || ''
   const hasKey = !!localStorage.getItem('sb_key')
+  const [geminiKey, setGeminiKey] = useState(localStorage.getItem('gemini_api_key') || '')
+  const [showGeminiKey, setShowGeminiKey] = useState(false)
 
   const runTest = async () => {
     setTesting(true)
@@ -84,6 +86,38 @@ function Settings({ onReconfigure }: { onReconfigure: () => void }) {
           className="w-full py-3 rounded-xl bg-[var(--color-pri)] text-white font-semibold text-sm">
           重新配置 Supabase
         </button>
+      </div>
+
+      <div className="bg-white rounded-2xl p-4 border border-[var(--color-border)] mb-4">
+        <div className="text-sm font-semibold text-[var(--color-k)] mb-1">🎤 Gemini 语音对话</div>
+        <div className="text-[11px] text-[var(--color-k3)] mb-3">Agent 页面的实时语音对话需要 Gemini API Key（仅存在本地）</div>
+        <div className="relative">
+          <input
+            type={showGeminiKey ? 'text' : 'password'}
+            value={geminiKey}
+            onChange={e => {
+              setGeminiKey(e.target.value)
+              localStorage.setItem('gemini_api_key', e.target.value)
+            }}
+            placeholder="粘贴 Gemini API Key…"
+            className="w-full text-sm px-3 py-2.5 pr-12 rounded-xl border border-[var(--color-border)] bg-[var(--color-bg)] outline-none focus:border-[var(--color-pri)] placeholder:text-[var(--color-k3)]"
+          />
+          <button
+            onClick={() => setShowGeminiKey(!showGeminiKey)}
+            className="absolute right-2 top-1/2 -translate-y-1/2 text-xs text-[var(--color-k3)] px-2 py-1"
+          >
+            {showGeminiKey ? '隐藏' : '显示'}
+          </button>
+        </div>
+        {geminiKey && (
+          <div className="flex items-center gap-2 mt-2">
+            <span className="w-2 h-2 rounded-full bg-green-500" />
+            <span className="text-[11px] text-green-600">已配置</span>
+          </div>
+        )}
+        <div className="text-[10px] text-[var(--color-k3)] mt-2">
+          获取方式：<a href="https://aistudio.google.com/apikey" target="_blank" rel="noopener" className="text-[var(--color-pri)] underline">Google AI Studio</a> → Create API Key
+        </div>
       </div>
 
       <div className="bg-white rounded-2xl p-4 border border-[var(--color-border)]">

@@ -2,6 +2,7 @@ import { useState, useRef, useEffect, useCallback } from 'react'
 import ReactMarkdown from 'react-markdown'
 import { executeAgent, fetchAgentTasks, fetchNotifications, markNotificationRead, markAllNotificationsRead, fetchReminders, createReminder, updateReminder as updateReminderApi, deleteReminder as deleteReminderApi, createNotification, QUICK_COMMANDS, type AgentTask, type AgentResponse, type AgentNotification, type TaskReminder } from '../lib/agent'
 import { captureItem } from '../lib/db'
+import VoiceChat from '../components/VoiceChat'
 
 interface ChatMessage {
   role: 'user' | 'agent'
@@ -54,6 +55,7 @@ export default function Agent() {
   const [reminderTime, setReminderTime] = useState('09:00')
   const [reminderDays, setReminderDays] = useState<number[]>([1, 2, 3, 4, 5])
   const remindersRef = useRef<TaskReminder[]>([])
+  const [showVoiceChat, setShowVoiceChat] = useState(false)
 
   // ── TTS 状态 ──
   const [ttsState, setTtsState] = useState<TtsState>('idle')
@@ -582,6 +584,13 @@ export default function Agent() {
               </span>
             )}
           </button>
+          {/* 语音对话 */}
+          <button
+            onClick={() => setShowVoiceChat(true)}
+            className="text-xs px-3 py-1.5 rounded-lg border border-[var(--color-border)] text-[var(--color-k3)] bg-white"
+          >
+            🎤
+          </button>
           {/* 定时提醒 */}
           <button
             onClick={() => { setShowReminders(true); fetchReminders().then(r => { setReminders(r); remindersRef.current = r }).catch(() => {}) }}
@@ -929,6 +938,11 @@ export default function Agent() {
         <div className="fixed bottom-24 left-1/2 -translate-x-1/2 px-4 py-2 bg-[var(--color-k)] text-white text-sm rounded-full shadow-lg toast-enter">
           {toast}
         </div>
+      )}
+
+      {/* 语音对话全屏覆盖 */}
+      {showVoiceChat && (
+        <VoiceChat onClose={() => setShowVoiceChat(false)} />
       )}
     </div>
   )
