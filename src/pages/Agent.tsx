@@ -2,7 +2,73 @@ import { useState, useRef, useEffect } from 'react'
 import ReactMarkdown from 'react-markdown'
 import { executeAgent, fetchAgentTasks, fetchNotifications, markNotificationRead, markAllNotificationsRead, fetchReminders, createReminder, updateReminder as updateReminderApi, deleteReminder as deleteReminderApi, QUICK_COMMANDS, type AgentTask, type AgentResponse, type AgentNotification, type TaskReminder } from '../lib/agent'
 import { captureItem } from '../lib/db'
+import { setupPushSubscription, getPushStatus } from '../lib/push'
 import VoiceChat from '../components/VoiceChat'
+
+function PushStatus() {
+  const [status, setStatus] = useState<string>('检查中…')
+  const [enabling, setEnabling] = useState(false)
+
+  useEffect(() => {
+    getPushStatus().then(s => {
+      if (s === 'subscribed') setStatus('已开启')
+      else if (s === 'unsupported') setStatus('不支持')
+      else setStatus('未开启')
+    })
+  }, [])
+
+  const enable = async () => {
+    setEnabling(true)
+    const result = await setupPushSubscription()
+    if (result === 'subscribed') setStatus('已开启')
+    else if (result === 'denied') setStatus('权限被拒绝')
+    else if (result === 'unsupported') setStatus('不支持')
+    else setStatus('失败')
+    setEnabling(false)
+  }
+
+  if (status === '已开启') {
+    return (
+      <div className="mt-3 bg-green-50 rounded-xl p-3 border border-green-200">
+        <div className="text-[12px] text-green-700 font-medium">✅ 后台推送已开启</div>
+        <div className="text-[11px] text-green-600 mt-1">锁屏、切后台、关闭页面后仍可收到系统通知。</div>
+      </div>
+    )
+  }
+
+  if (status === '不支持') {
+    return (
+      <div className="mt-3 bg-amber-50 rounded-xl p-3 border border-amber-200">
+        <div className="text-[12px] text-amber-700 font-medium">⚠ 浏览器不支持推送</div>
+        <div className="text-[11px] text-amber-600 mt-1">请使用 Chrome 浏览器，提醒仅在页面打开时生效。</div>
+      </div>
+    )
+  }
+
+  if (status === '权限被拒绝') {
+    return (
+      <div className="mt-3 bg-red-50 rounded-xl p-3 border border-red-200">
+        <div className="text-[12px] text-red-700 font-medium">❌ 通知权限被拒绝</div>
+        <div className="text-[11px] text-red-600 mt-1">请到 Chrome 设置 → 网站设置 → 通知 中允许本网站，然后回来重试。</div>
+        <button onClick={enable} disabled={enabling}
+          className="mt-2 text-[11px] text-white bg-red-500 px-3 py-1.5 rounded-lg font-medium disabled:opacity-50">
+          {enabling ? '重试中…' : '重试'}
+        </button>
+      </div>
+    )
+  }
+
+  return (
+    <div className="mt-3 bg-amber-50 rounded-xl p-3 border border-amber-200">
+      <div className="text-[12px] text-amber-700 font-medium">🔔 开启后台推送通知</div>
+      <div className="text-[11px] text-amber-600 mt-1">开启后，锁屏/关闭页面也能收到提醒通知。</div>
+      <button onClick={enable} disabled={enabling}
+        className="mt-2 text-[11px] text-white bg-amber-500 px-3 py-1.5 rounded-lg font-medium disabled:opacity-50">
+        {enabling ? '开启中…' : '开启推送通知'}
+      </button>
+    </div>
+  )
+}
 
 interface ChatMessage {
   role: 'user' | 'agent'
@@ -423,11 +489,8 @@ export default function Agent() {
             </button>
           </div>
 
-          {/* 提醒说明 */}
-          <div className="mt-3 bg-blue-50 rounded-xl p-3 border border-blue-200">
-            <div className="text-[12px] text-blue-700 font-medium">💡 提醒方式</div>
-            <div className="text-[11px] text-blue-600 mt-1">到时间后会弹出全屏提醒 + 声音提示，无需浏览器通知权限。请保持页面打开。</div>
-          </div>
+          {/* 推送状态 */}
+          <PushStatus />
         </div>
       </div>
     )
