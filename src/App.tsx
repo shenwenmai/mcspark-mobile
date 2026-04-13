@@ -145,21 +145,70 @@ function Settings({ onReconfigure }: { onReconfigure: () => void }) {
   )
 }
 
+// ── 应用内提醒弹窗组件 ──
+function ReminderAlert({ title, time, onDismiss }: { title: string; time: string; onDismiss: () => void }) {
+  useEffect(() => {
+    // 用 AudioContext 生成提示音（兼容所有浏览器）
+    try {
+      const ctx = new (window.AudioContext || (window as any).webkitAudioContext)()
+      const playBeep = (freq: number, startTime: number, duration: number) => {
+        const osc = ctx.createOscillator()
+        const gain = ctx.createGain()
+        osc.connect(gain)
+        gain.connect(ctx.destination)
+        osc.frequency.value = freq
+        osc.type = 'sine'
+        gain.gain.setValueAtTime(0.3, startTime)
+        gain.gain.exponentialRampToValueAtTime(0.01, startTime + duration)
+        osc.start(startTime)
+        osc.stop(startTime + duration)
+      }
+      // 三连响
+      const now = ctx.currentTime
+      playBeep(880, now, 0.15)
+      playBeep(1100, now + 0.2, 0.15)
+      playBeep(880, now + 0.4, 0.3)
+      // 第二轮（1.5秒后重复）
+      playBeep(880, now + 1.5, 0.15)
+      playBeep(1100, now + 1.7, 0.15)
+      playBeep(880, now + 1.9, 0.3)
+    } catch (e) {
+      console.warn('[Reminder] 音频播放失败:', e)
+    }
+
+    // 30秒后自动关闭
+    const t = setTimeout(onDismiss, 30000)
+    return () => clearTimeout(t)
+  }, [onDismiss])
+
+  return (
+    <div className="fixed inset-0 z-[9999] flex items-center justify-center bg-black/60 backdrop-blur-sm" onClick={onDismiss}>
+      <div className="bg-white rounded-3xl p-6 mx-6 max-w-sm w-full shadow-2xl animate-bounce-in text-center" onClick={e => e.stopPropagation()}>
+        <div className="text-5xl mb-4">⏰</div>
+        <div className="text-xl font-bold text-gray-900 mb-2">{title}</div>
+        <div className="text-lg text-gray-500 mb-6">提醒时间：{time}</div>
+        <button
+          onClick={onDismiss}
+          className="w-full py-3.5 rounded-2xl bg-[var(--color-pri)] text-white text-base font-bold active:scale-95 transition-transform"
+        >
+          知道了
+        </button>
+      </div>
+    </div>
+  )
+}
+
 export default function App() {
   const [ready, setReady] = useState(isConfigured())
   const [tab, setTab] = useState<Tab>('capture')
   const [refreshKey, setRefreshKey] = useState(0)
   const remindersRef = useRef<TaskReminder[]>([])
   const [reminderDebug, setReminderDebug] = useState('')
+  const [activeAlert, setActiveAlert] = useState<{ title: string; time: string } | null>(null)
 
   // ── 全局提醒检查器（不依赖任何 tab） ──
   useEffect(() => {
     if (!isConfigured()) return
-
-    // 请求通知权限
-    if ('Notification' in window && Notification.permission === 'default') {
-      Notification.requestPermission()
-    }
 
     // 加载提醒
     fetchReminders().then(r => {
@@ -191,14 +240,13 @@ export default function App() {
       const currentDay = now.getDay() // 0=周日 1=周一 ... 6=周六
       const today = now.toISOString().split('T')[0]
       const nowStr = `${String(now.getHours()).padStart(2,'0')}:${String(now.getMinutes()).padStart(2,'0')}`
-      const notifPerm = 'Notification' in window ? Notification.permission : 'N/A'
 
       if (list.length === 0) {
-        setReminderDebug(`${nowStr} | 0个提醒 | 通知:${notifPerm}`)
+        setReminderDebug(`${nowStr} | 0个提醒`)
         return
       }
 
-      const debugParts: string[] = [`${nowStr} 周${currentDay} | ${list.length}个 | 通知:${notifPerm}`]
+      const debugParts: string[] = [`${nowStr} 周${currentDay} | ${list.length}个`]
       for (const r of list) {
         if (!r.enabled) { debugParts.push(`[${r.title}]禁用`); continue }
 
@@ -228,21 +276,21 @@ export default function App() {
           continue
         }
 
-        // 匹配！触发通知
+        // 匹配！触发应用内弹窗提醒
         debugParts.push(`[${r.title}]${r.remind_time} ✅触发!`)
 
-        // 浏览器通知
+        // 显示全屏弹窗 + 声音
+        setActiveAlert({ title: r.title, time: r.remind_time })
+
+        // 同时尝试浏览器通知（如果支持的话作为额外通知）
         if ('Notification' in window && Notification.permission === 'granted') {
           try {
             new Notification('⏰ ' + r.title, {
               body: `提醒时间：${r.remind_time}`,
               icon: '/favicon.svg',
               tag: r.id,
-              requireInteraction: true,
             })
-          } catch (e) {
-            console.warn('[Reminder] 通知创建失败:', e)
-          }
+          } catch (_) { /* 不支持就忽略 */ }
         }
 
         // 存入通知记录
@@ -300,33 +348,26 @@ export default function App() {
         }} />}
       </div>
 
-      {/* 提醒调试条 */}
+      {/* 提醒状态条 */}
       {reminderDebug && (
         <div className="shrink-0 bg-gray-900 px-3 py-1 flex items-center gap-2">
           <div className="flex-1 text-[9px] text-green-400 font-mono truncate">⏰ {reminderDebug}</div>
           <button
-            onClick={() => {
-              // 手动测试通知
-              if (!('Notification' in window)) {
-                setReminderDebug('浏览器不支持通知')
-                return
-              }
-              if (Notification.permission === 'default') {
-                Notification.requestPermission().then(p => setReminderDebug('通知权限: ' + p))
-                return
-              }
-              if (Notification.permission === 'denied') {
-                setReminderDebug('通知已被阻止，请在浏览器设置中允许')
-                return
-              }
-              new Notification('⏰ 测试提醒', { body: '如果你看到了这条通知，说明提醒功能正常！', icon: '/favicon.svg' })
-              setReminderDebug('✅ 测试通知已发送')
-            }}
+            onClick={() => setActiveAlert({ title: '测试提醒', time: new Date().toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' }) })}
             className="text-[9px] text-yellow-400 bg-yellow-400/10 px-2 py-0.5 rounded shrink-0"
           >
             测试
           </button>
         </div>
+      )}
+
+      {/* 提醒弹窗（应用内，不依赖浏览器 Notification API） */}
+      {activeAlert && (
+        <ReminderAlert
+          title={activeAlert.title}
+          time={activeAlert.time}
+          onDismiss={() => setActiveAlert(null)}
+        />
       )}
 
       {/* Bottom Nav */}

@@ -44,10 +44,18 @@ export default function Agent() {
   const inputRef = useRef<HTMLTextAreaElement>(null)
 
   // ── TTS 播报 ──
+  const ttsAbortRef = useRef<AbortController | null>(null)
+
   const stopTts = () => {
+    // 取消正在进行的 fetch 请求
+    if (ttsAbortRef.current) {
+      ttsAbortRef.current.abort()
+      ttsAbortRef.current = null
+    }
+    // 停止正在播放的音频
     if (ttsAudioRef.current) {
       ttsAudioRef.current.pause()
-      ttsAudioRef.current.src = ''
+      ttsAudioRef.current.currentTime = 0
       ttsAudioRef.current = null
     }
     setPlayingMsgIdx(-1)
@@ -73,24 +81,31 @@ export default function Agent() {
     if (!clean) return
 
     setPlayingMsgIdx(idx)
+    showToast('正在加载语音…')
 
     try {
+      const abort = new AbortController()
+      ttsAbortRef.current = abort
+
       const res = await fetch(`${sbUrl}/functions/v1/tts`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${sbKey}`, 'apikey': sbKey },
         body: JSON.stringify({ text: clean }),
+        signal: abort.signal,
       })
-      if (!res.ok) { showToast('播报失败'); setPlayingMsgIdx(-1); return }
+      if (!res.ok) { showToast('播报失败: ' + res.status); setPlayingMsgIdx(-1); return }
 
       const blob = await res.blob()
       const url = URL.createObjectURL(blob)
       const audio = new Audio(url)
       ttsAudioRef.current = audio
       audio.onended = () => { URL.revokeObjectURL(url); ttsAudioRef.current = null; setPlayingMsgIdx(-1) }
-      audio.onerror = () => { URL.revokeObjectURL(url); ttsAudioRef.current = null; setPlayingMsgIdx(-1) }
+      audio.onerror = () => { URL.revokeObjectURL(url); ttsAudioRef.current = null; setPlayingMsgIdx(-1); showToast('播放失败') }
       await audio.play()
-    } catch {
-      showToast('播报异常')
+    } catch (e) {
+      if ((e as Error).name !== 'AbortError') {
+        showToast('播报异常: ' + (e as Error).message)
+      }
       setPlayingMsgIdx(-1)
     }
   }
@@ -389,25 +404,11 @@ export default function Agent() {
             </button>
           </div>
 
-          {/* 通知权限提示 */}
-          {'Notification' in window && Notification.permission === 'default' && (
-            <div className="mt-3 bg-amber-50 rounded-xl p-3 border border-amber-200">
-              <div className="text-[12px] text-amber-700 font-medium">⚠ 需要通知权限</div>
-              <div className="text-[11px] text-amber-600 mt-1">请允许浏览器通知，否则提醒时无法弹出横幅。</div>
-              <button
-                onClick={() => Notification.requestPermission()}
-                className="mt-2 text-[11px] text-white bg-amber-500 px-3 py-1.5 rounded-lg font-medium"
-              >
-                授权通知
-              </button>
-            </div>
-          )}
-          {'Notification' in window && Notification.permission === 'denied' && (
-            <div className="mt-3 bg-red-50 rounded-xl p-3 border border-red-200">
-              <div className="text-[12px] text-red-700 font-medium">❌ 通知已被阻止</div>
-              <div className="text-[11px] text-red-600 mt-1">请在浏览器设置中允许本网站发送通知，才能收到提醒横幅。</div>
-            </div>
-          )}
+          {/* 提醒说明 */}
+          <div className="mt-3 bg-blue-50 rounded-xl p-3 border border-blue-200">
+            <div className="text-[12px] text-blue-700 font-medium">💡 提醒方式</div>
+            <div className="text-[11px] text-blue-600 mt-1">到时间后会弹出全屏提醒 + 声音提示，无需浏览器通知权限。请保持页面打开。</div>
+          </div>
         </div>
       </div>
     )
