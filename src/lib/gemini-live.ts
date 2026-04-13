@@ -9,6 +9,7 @@ export interface LiveCallbacks {
   onStateChange: (state: LiveState) => void
   onError: (msg: string) => void
   onAudioLevel: (level: number) => void
+  onTranscript?: (text: string, isFinal: boolean) => void
 }
 
 const WS_BASE = 'wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContent'
@@ -94,7 +95,7 @@ export class GeminiLiveSession {
         setup: {
           model,
           generationConfig: {
-            responseModalities: ['AUDIO'],
+            responseModalities: ['AUDIO', 'TEXT'],
             speechConfig: {
               voiceConfig: {
                 prebuiltVoiceConfig: { voiceName: this.voiceName }
@@ -185,10 +186,11 @@ export class GeminiLiveSession {
     }
 
     // AI 回复
-    const sc = data.serverContent as { modelTurn?: { parts?: Array<{ inlineData?: { data: string } }> }; turnComplete?: boolean } | undefined
+    const sc = data.serverContent as { modelTurn?: { parts?: Array<{ inlineData?: { data: string }; text?: string }> }; turnComplete?: boolean } | undefined
     if (sc) {
       if (sc.modelTurn?.parts) {
         for (const part of sc.modelTurn.parts) {
+          // 音频数据
           if (part.inlineData?.data) {
             this.setState('speaking')
             const pcm = this.b64ToI16(part.inlineData.data)
@@ -196,10 +198,16 @@ export class GeminiLiveSession {
             this.playQueue.push(f32)
             this.playNext()
           }
+          // 文字内容（实时字幕）
+          if (part.text) {
+            this.cb.onTranscript?.(part.text, false)
+          }
         }
       }
 
       if (sc.turnComplete) {
+        // 标记本轮文字结束
+        this.cb.onTranscript?.('', true)
         const waitDone = () => {
           if (this.playQueue.length === 0 && !this.isPlaying) {
             if (this._state === 'speaking') this.setState('listening')

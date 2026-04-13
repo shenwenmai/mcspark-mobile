@@ -682,7 +682,20 @@ export default function Agent() {
 
       {/* 语音对话全屏覆盖 */}
       {showVoiceChat && (
-        <VoiceChat onClose={() => setShowVoiceChat(false)} />
+        <VoiceChat onClose={(transcript) => {
+          setShowVoiceChat(false)
+          // 把语音对话记录保存到聊天历史
+          if (transcript && transcript.length > 0) {
+            const voiceMsg: ChatMessage = {
+              role: 'agent',
+              text: `🎤 **语音对话记录** (${transcript.length} 条回复)\n\n` +
+                transcript.map(t => t.text).join('\n\n'),
+              timestamp: Date.now(),
+            }
+            setMessages(prev => [...prev, voiceMsg])
+            showToast(`语音对话已保存 (${transcript.length} 条)`)
+          }
+        }} />
       )}
     </div>
   )
