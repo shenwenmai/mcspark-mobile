@@ -123,6 +123,7 @@ function Settings({ onReconfigure }: { onReconfigure: () => void }) {
       <div className="bg-white rounded-2xl p-4 border border-[var(--color-border)]">
         <div className="text-sm font-semibold text-[var(--color-k)] mb-3">缓存</div>
         <button onClick={() => {
+          sessionStorage.setItem('active_tab', 'settings')
           if ('serviceWorker' in navigator) {
             navigator.serviceWorker.getRegistrations().then(regs => {
               regs.forEach(r => r.unregister())
@@ -143,7 +144,11 @@ function Settings({ onReconfigure }: { onReconfigure: () => void }) {
 
 export default function App() {
   const [ready, setReady] = useState(isConfigured())
-  const [tab, setTab] = useState<Tab>('capture')
+  const [tab, setTab] = useState<Tab>(() => {
+    const saved = sessionStorage.getItem('active_tab') as Tab | null
+    if (saved) { sessionStorage.removeItem('active_tab'); return saved }
+    return 'capture'
+  })
   const [refreshKey, setRefreshKey] = useState(0)
 
   if (!ready) {
