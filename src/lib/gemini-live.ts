@@ -15,9 +15,9 @@ const WS_BASE = 'wss://generativelanguage.googleapis.com/ws/google.ai.generative
 const INPUT_RATE = 16000
 const OUTPUT_RATE = 24000
 const MODELS = [
-  'models/gemini-2.5-flash-preview-native-audio-dialog',
+  'models/gemini-3.1-flash-live-preview',
+  'models/gemini-2.5-flash-live-preview',
   'models/gemini-2.0-flash-live-001',
-  'models/gemini-2.0-flash-exp',
 ]
 
 export class GeminiLiveSession {
