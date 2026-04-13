@@ -188,7 +188,7 @@ export default function App() {
       const list = remindersRef.current
       const now = new Date()
       const nowMinutes = now.getHours() * 60 + now.getMinutes()
-      const currentDay = now.getDay()
+      const currentDay = now.getDay() // 0=周日 1=周一 ... 6=周六
       const today = now.toISOString().split('T')[0]
       const nowStr = `${String(now.getHours()).padStart(2,'0')}:${String(now.getMinutes()).padStart(2,'0')}`
       const notifPerm = 'Notification' in window ? Notification.permission : 'N/A'
@@ -198,42 +198,71 @@ export default function App() {
         return
       }
 
-      // 调试：显示每个提醒的匹配状态
       const debugParts: string[] = [`${nowStr} 周${currentDay} | ${list.length}个 | 通知:${notifPerm}`]
       for (const r of list) {
-        if (!r.enabled) { debugParts.push(`${r.remind_time} 禁用`); continue }
-        if (!r.repeat_days.includes(currentDay)) { debugParts.push(`${r.remind_time} 今天不重复`); continue }
-        if (r.last_triggered_date === today) { debugParts.push(`${r.remind_time} 今天已触发`); continue }
+        if (!r.enabled) { debugParts.push(`[${r.title}]禁用`); continue }
 
-        const [hh, mm] = r.remind_time.split(':').map(Number)
+        // repeat_days 可能是字符串或数组，做兼容处理
+        const days: number[] = Array.isArray(r.repeat_days)
+          ? r.repeat_days
+          : (typeof r.repeat_days === 'string' ? JSON.parse(r.repeat_days) : [])
+
+        if (!days.includes(currentDay)) {
+          debugParts.push(`[${r.title}]${r.remind_time} 周${days.join(',')}不含今天`)
+          continue
+        }
+        if (r.last_triggered_date === today) {
+          debugParts.push(`[${r.title}]${r.remind_time} 今天已触发`)
+          continue
+        }
+
+        // 解析时间（兼容 HH:MM 和 HH:MM:SS 格式）
+        const timeParts = r.remind_time.split(':').map(Number)
+        const hh = timeParts[0] || 0
+        const mm = timeParts[1] || 0
         const reminderMinutes = hh * 60 + mm
         const diff = nowMinutes - reminderMinutes
 
-        if (diff < 0 || diff > 3) {
-          debugParts.push(`${r.remind_time} 差${diff}分钟(未到)`)
+        if (diff < 0 || diff > 5) {
+          debugParts.push(`[${r.title}]${r.remind_time} 差${diff}分`)
           continue
         }
 
         // 匹配！触发通知
-        debugParts.push(`${r.remind_time} ✅触发!`)
+        debugParts.push(`[${r.title}]${r.remind_time} ✅触发!`)
 
+        // 浏览器通知
         if ('Notification' in window && Notification.permission === 'granted') {
-          new Notification('⏰ ' + r.title, {
-            body: `提醒时间：${r.remind_time}`,
-            icon: '/favicon.svg',
-            tag: r.id,
-            requireInteraction: true,
-          })
+          try {
+            new Notification('⏰ ' + r.title, {
+              body: `提醒时间：${r.remind_time}`,
+              icon: '/favicon.svg',
+              tag: r.id,
+              requireInteraction: true,
+            })
+          } catch (e) {
+            console.warn('[Reminder] 通知创建失败:', e)
+          }
         }
 
-        await createNotification({
-          type: 'reminder',
-          title: '⏰ ' + r.title,
-          content: `定时提醒：${r.title}\n时间：${r.remind_time}`,
-        })
+        // 存入通知记录
+        try {
+          await createNotification({
+            type: 'reminder',
+            title: '⏰ ' + r.title,
+            content: `定时提醒：${r.title}\n时间：${r.remind_time}`,
+          })
+        } catch (e) {
+          console.warn('[Reminder] 保存通知失败:', e)
+        }
 
-        await updateReminderApi(r.id, { last_triggered_date: today })
-        r.last_triggered_date = today
+        // 标记已触发
+        try {
+          await updateReminderApi(r.id, { last_triggered_date: today })
+          r.last_triggered_date = today
+        } catch (e) {
+          console.warn('[Reminder] 更新触发状态失败:', e)
+        }
       }
       setReminderDebug(debugParts.join(' | '))
     }
@@ -273,8 +302,30 @@ export default function App() {
 
       {/* 提醒调试条 */}
       {reminderDebug && (
-        <div className="shrink-0 bg-gray-900 px-3 py-1">
-          <div className="text-[9px] text-green-400 font-mono truncate">⏰ {reminderDebug}</div>
+        <div className="shrink-0 bg-gray-900 px-3 py-1 flex items-center gap-2">
+          <div className="flex-1 text-[9px] text-green-400 font-mono truncate">⏰ {reminderDebug}</div>
+          <button
+            onClick={() => {
+              // 手动测试通知
+              if (!('Notification' in window)) {
+                setReminderDebug('浏览器不支持通知')
+                return
+              }
+              if (Notification.permission === 'default') {
+                Notification.requestPermission().then(p => setReminderDebug('通知权限: ' + p))
+                return
+              }
+              if (Notification.permission === 'denied') {
+                setReminderDebug('通知已被阻止，请在浏览器设置中允许')
+                return
+              }
+              new Notification('⏰ 测试提醒', { body: '如果你看到了这条通知，说明提醒功能正常！', icon: '/favicon.svg' })
+              setReminderDebug('✅ 测试通知已发送')
+            }}
+            className="text-[9px] text-yellow-400 bg-yellow-400/10 px-2 py-0.5 rounded shrink-0"
+          >
+            测试
+          </button>
         </div>
       )}
 
