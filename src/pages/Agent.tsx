@@ -366,6 +366,7 @@ export default function Agent() {
             <div className="text-center text-[var(--color-k3)] text-sm mb-6">
               <div className="text-3xl mb-2 opacity-50">✦</div>
               <div>向 AI Agent 提问，或使用快捷指令</div>
+              <div className="text-[11px] mt-1 text-[var(--color-k3)]">粘贴链接可自动抓取网页内容</div>
             </div>
             <div className="grid grid-cols-2 gap-2">
               {QUICK_COMMANDS.map((cmd, i) => (
@@ -504,7 +505,7 @@ export default function Agent() {
                     <span className="inline-block w-2 h-2 bg-[var(--color-pri)] rounded-full animate-pulse" />
                     <span className="inline-block w-2 h-2 bg-[var(--color-pri)] rounded-full animate-pulse" style={{ animationDelay: '0.2s' }} />
                     <span className="inline-block w-2 h-2 bg-[var(--color-pri)] rounded-full animate-pulse" style={{ animationDelay: '0.4s' }} />
-                    <span className="ml-1">思考中…</span>
+                    <span className="ml-1">{/https?:\/\//.test(messages[messages.length - 1]?.text || '') ? '正在抓取网页…' : '思考中…'}</span>
                   </div>
                 </div>
               </div>

@@ -86,6 +86,91 @@ function extractKeywords(text: string): string[] {
   return [...new Set(keywords)].slice(0, 15)
 }
 
+// ── URL 检测与抓取 ──
+const URL_REGEX = /https?:\/\/[^\s<>"{}|\\^`\[\]]+/gi
+
+function extractUrls(text: string): string[] {
+  return [...new Set((text.match(URL_REGEX) || []).map(u => u.replace(/[.,;:!?）)》\]]+$/, '')))]
+}
+
+async function fetchUrlContent(url: string): Promise<string> {
+  const errors: string[] = []
+
+  // Strategy 1: Jina Reader（最快、返回干净 Markdown）
+  try {
+    console.log('[Agent] fetching URL via Jina:', url)
+    const r = await fetch(`https://r.jina.ai/${url}`, {
+      headers: { 'Accept': 'text/plain', 'X-Return-Format': 'text', 'X-No-Cache': 'true', 'X-Timeout': '15' },
+      signal: AbortSignal.timeout(18000),
+    })
+    if (!r.ok) throw new Error(`HTTP ${r.status}`)
+    const t = await r.text()
+    if (!t.trim() || t.length < 50) throw new Error('内容过短')
+    console.log('[Agent] Jina success, length:', t.length)
+    return t.substring(0, 12000)
+  } catch (e) {
+    errors.push('Jina:' + (e as Error).message)
+  }
+
+  // Strategy 2: CORS proxy
+  try {
+    console.log('[Agent] fetching URL via proxy')
+    const r = await fetch(`https://api.allorigins.win/get?url=${encodeURIComponent(url)}`, {
+      signal: AbortSignal.timeout(15000),
+    })
+    if (r.ok) {
+      const json = await r.json()
+      const html = json.contents || ''
+      // 粗暴提取文本：去掉 script/style 标签，取 textContent
+      const text = html
+        .replace(/<script[\s\S]*?<\/script>/gi, '')
+        .replace(/<style[\s\S]*?<\/style>/gi, '')
+        .replace(/<[^>]+>/g, ' ')
+        .replace(/&nbsp;/g, ' ')
+        .replace(/&[a-z]+;/gi, ' ')
+        .replace(/\s{3,}/g, '\n')
+        .trim()
+      if (text.length >= 100) {
+        console.log('[Agent] proxy success, length:', text.length)
+        return text.substring(0, 12000)
+      }
+    }
+    throw new Error('代理返回内容不足')
+  } catch (e) {
+    errors.push('Proxy:' + (e as Error).message)
+  }
+
+  // Strategy 3: 用 Gemini url_context 工具
+  if (GEMINI_KEY) {
+    try {
+      console.log('[Agent] fetching URL via Gemini url_context')
+      const r = await fetch(GEMINI_URL, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        signal: AbortSignal.timeout(45000),
+        body: JSON.stringify({
+          contents: [{ role: 'user', parts: [{ text: `读取并输出以下网页的完整正文内容，用 Markdown 格式，不要总结，不要评论：\n${url}` }] }],
+          tools: [{ url_context: {} }],
+          generationConfig: { temperature: 0, maxOutputTokens: 8192 },
+        }),
+      })
+      if (r.ok) {
+        const d = await r.json()
+        const text = d.candidates?.[0]?.content?.parts?.map((p: { text?: string }) => p.text || '').join('\n').trim() || ''
+        if (text.length >= 80) {
+          console.log('[Agent] Gemini url_context success, length:', text.length)
+          return text.substring(0, 12000)
+        }
+      }
+      throw new Error('Gemini返回不足')
+    } catch (e) {
+      errors.push('Gemini:' + (e as Error).message)
+    }
+  }
+
+  throw new Error('URL 抓取失败: ' + errors.join('; '))
+}
+
 // 自动检测任务类型
 function detectTaskType(instruction: string): string {
   const text = instruction.toLowerCase()
@@ -213,11 +298,34 @@ async function handleRequest(req: Request): Promise<Response> {
       await sb.from('agent_tasks').update({ status: 'running', started_at: new Date().toISOString() }).eq('id', taskId)
     }
 
+    // ── URL 抓取 ──
+    const urls = extractUrls(instruction)
+    let urlContents = ''
+    if (urls.length > 0) {
+      console.log('[Agent] detected URLs:', urls)
+      const fetched: string[] = []
+      for (const url of urls.slice(0, 3)) { // 最多抓取3个URL
+        try {
+          const content = await fetchUrlContent(url)
+          fetched.push(`\n\n--- 以下是从 ${url} 抓取的网页内容 ---\n${content}\n--- 网页内容结束 ---`)
+        } catch (e) {
+          fetched.push(`\n\n[⚠️ 无法读取 ${url}: ${(e as Error).message}]`)
+        }
+      }
+      urlContents = fetched.join('\n')
+    }
+
     const isFullScan = ['analyze', 'organize', 'digest', 'summarize'].includes(task_type)
     const contextLimit = isFullScan ? 50 : 30
 
     const { items: vaultItems, total } = await fetchVaultContext(sb, instruction, task_type, contextLimit)
-    const systemPrompt = buildSystemPrompt(task_type, vaultItems, total)
+    let systemPrompt = buildSystemPrompt(task_type, vaultItems, total)
+
+    // 如果有 URL 内容，追加到 system prompt
+    if (urlContents) {
+      systemPrompt += `\n\n用户消息中包含链接，以下是抓取到的网页内容。请基于这些内容回答用户的问题（总结、分析、提炼等）。如果用户要求存入知识库，请整理成结构化内容。${urlContents}`
+    }
+
     const geminiResult = await callGemini(instruction, systemPrompt, history)
     const duration = Date.now() - startTime
     if (taskId) {
