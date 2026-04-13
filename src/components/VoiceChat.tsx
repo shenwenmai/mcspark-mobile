@@ -1,5 +1,6 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
 import { GeminiLiveSession, type LiveState } from '../lib/gemini-live'
+import { fetchItems } from '../lib/db'
 
 interface Props {
   onClose: () => void
@@ -62,15 +63,55 @@ export default function VoiceChat({ onClose }: Props) {
     })
     sessionRef.current = session
 
-    const systemPrompt = `你是 AIVault 知识库语音助手。规则：
+    // 加载知识库内容注入到 system prompt，让 AI 有真实数据可以回答
+    const startWithKnowledge = async () => {
+      let knowledgeContext = ''
+      try {
+        const items = await fetchItems()
+        if (items.length > 0) {
+          // 按分类分组统计
+          const catCount: Record<string, number> = {}
+          items.forEach(it => { catCount[it.category] = (catCount[it.category] || 0) + 1 })
+          const catSummary = Object.entries(catCount).map(([c, n]) => `${c}(${n}条)`).join('、')
+
+          // 取最近的条目，拼接摘要（控制总长度避免超限）
+          const MAX_CHARS = 6000
+          let used = 0
+          const snippets: string[] = []
+          for (const it of items) {
+            const summary = it.summary || it.content?.substring(0, 120) || ''
+            const tags = it.tags?.length ? ` [标签:${it.tags.join(',')}]` : ''
+            const line = `• ${it.title}${tags}: ${summary}`
+            if (used + line.length > MAX_CHARS) break
+            snippets.push(line)
+            used += line.length
+          }
+
+          knowledgeContext = `\n\n=== 用户知识库概况 ===
+总计 ${items.length} 条知识，分类：${catSummary}
+
+=== 知识库内容（按时间从新到旧） ===
+${snippets.join('\n')}`
+        }
+      } catch (e) {
+        console.warn('[VoiceChat] 加载知识库失败:', e)
+      }
+
+      const systemPrompt = `你是 AIVault 知识库语音助手。你可以访问用户的个人知识库数据，请基于这些真实数据来回答问题。
+
+规则：
 - 始终用中文回答
 - 语气自然亲切，像朋友聊天
 - 回答简洁，适合语音交流（每次回复控制在 3-5 句话）
 - 不要输出列表、代码块、Markdown 格式
-- 如果用户问知识库相关问题，尽量提供有用的建议
-- 可以随时被打断，被打断后根据新问题重新回答`
+- 回答必须基于下方提供的知识库真实内容，不要编造不存在的条目
+- 如果知识库中没有相关内容，坦诚告诉用户"你的知识库里目前没有这方面的内容"
+- 可以随时被打断，被打断后根据新问题重新回答${knowledgeContext}`
 
-    session.start(apiKey, systemPrompt)
+      session.start(apiKey, systemPrompt)
+    }
+
+    startWithKnowledge()
 
     // 计时器
     timerRef.current = window.setInterval(() => {
