@@ -44,7 +44,8 @@ export default function Capture({ onSaved }: { onSaved: () => void }) {
       setRecording(true)
       setRecordTime(0)
       timerRef.current = setInterval(() => setRecordTime(t => t + 1), 1000)
-    } catch {
+    } catch (e) {
+      console.warn('[Capture] 麦克风访问失败:', e)
       showToast('无法访问麦克风，请允许权限', 3000)
     }
   }

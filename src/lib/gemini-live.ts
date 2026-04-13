@@ -110,7 +110,7 @@ export class GeminiLiveSession {
       try {
         const data = JSON.parse(e.data)
         this.handleMsg(data)
-      } catch { /* ignore parse errors */ }
+      } catch (e) { console.warn('[GeminiLive] WS消息解析失败:', e) }
     }
 
     this.ws.onerror = (ev) => {
@@ -147,7 +147,7 @@ export class GeminiLiveSession {
     if (this.silentGain) { this.silentGain.disconnect(); this.silentGain = null }
     if (this.mediaStream) { this.mediaStream.getTracks().forEach(t => t.stop()); this.mediaStream = null }
     if (this.ws && this.ws.readyState <= 1) { this.ws.close(1000); this.ws = null }
-    if (this.audioCtx) { this.audioCtx.close().catch(() => {}); this.audioCtx = null }
+    if (this.audioCtx) { this.audioCtx.close().catch(e => console.warn('[GeminiLive] AudioContext关闭异常:', e)); this.audioCtx = null }
     this.playQueue = []
     this.isPlaying = false
     this.setState('closed')
@@ -192,7 +192,11 @@ export class GeminiLiveSession {
         }
         setTimeout(waitDone, 150)
       }
+      return
     }
+
+    // 未识别的消息（可能是错误）
+    console.log('[GeminiLive] 未处理消息:', JSON.stringify(data).substring(0, 300))
   }
 
   // ── 麦克风采集 ──

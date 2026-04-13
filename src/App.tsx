@@ -161,15 +161,23 @@ export default function App() {
     }
 
     // 加载提醒
-    fetchReminders().then(r => { remindersRef.current = r }).catch(() => {})
+    fetchReminders().then(r => { remindersRef.current = r }).catch(e => console.warn('[Reminder] 加载失败:', e))
+
+    // 定期刷新提醒列表（同步 Agent 页新增的）
+    let lastRefresh = 0
+    const refreshList = async () => {
+      try { remindersRef.current = await fetchReminders() } catch (e) { console.warn('[Reminder] 刷新失败:', e) }
+      lastRefresh = Date.now()
+    }
 
     const checkReminders = async () => {
-      const list = remindersRef.current
-      if (list.length === 0) {
-        // 每次检查也尝试重新加载（可能用户在 Agent 页新增了）
-        try { remindersRef.current = await fetchReminders() } catch {}
-        return
+      // 每 2 分钟刷新一次列表，确保 Agent 页新增的提醒能被检测到
+      if (Date.now() - lastRefresh > 120000) {
+        await refreshList()
       }
+
+      const list = remindersRef.current
+      if (list.length === 0) return
 
       const now = new Date()
       const nowMinutes = now.getHours() * 60 + now.getMinutes()

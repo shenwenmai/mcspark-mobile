@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect, useCallback } from 'react'
+import { useState, useRef, useEffect } from 'react'
 import ReactMarkdown from 'react-markdown'
 import { executeAgent, fetchAgentTasks, fetchNotifications, markNotificationRead, markAllNotificationsRead, fetchReminders, createReminder, updateReminder as updateReminderApi, deleteReminder as deleteReminderApi, QUICK_COMMANDS, type AgentTask, type AgentResponse, type AgentNotification, type TaskReminder } from '../lib/agent'
 import { captureItem } from '../lib/db'
@@ -13,31 +13,12 @@ interface ChatMessage {
   timestamp: number
 }
 
-// ── TTS 工具函数 ──
-function stripMarkdown(text: string): string {
-  return text
-    .replace(/```[\s\S]*?```/g, '') // 去掉代码块
-    .replace(/`[^`]*`/g, '')        // 去掉行内代码
-    .replace(/#{1,6}\s*/g, '')      // 去掉标题符号
-    .replace(/\*\*([^*]+)\*\*/g, '$1') // 去掉加粗
-    .replace(/\*([^*]+)\*/g, '$1')     // 去掉斜体
-    .replace(/~~([^~]+)~~/g, '$1')     // 去掉删除线
-    .replace(/>\s*/g, '')              // 去掉引用
-    .replace(/\[([^\]]+)\]\([^)]+\)/g, '$1') // 链接只留文字
-    .replace(/[|\-]{3,}/g, '')         // 去掉表格分隔线
-    .replace(/\n{3,}/g, '\n\n')        // 压缩多余空行
-    .replace(/❌|✅|💾|📊|🔍|🏷️|💡|📝|🧹|⏱|📚|🔤/g, '') // 去掉 emoji
-    .trim()
-}
-
-type TtsState = 'idle' | 'playing' | 'paused'
-
 export default function Agent() {
   const [messages, setMessages] = useState<ChatMessage[]>(() => {
     try {
       const saved = localStorage.getItem('agent_chat')
       return saved ? JSON.parse(saved) : []
-    } catch { return [] }
+    } catch (e) { console.warn('[Agent] 聊天记录解析失败:', e); return [] }
   })
   const [input, setInput] = useState('')
   const [loading, setLoading] = useState(false)
@@ -54,23 +35,8 @@ export default function Agent() {
   const [reminderTitle, setReminderTitle] = useState('')
   const [reminderTime, setReminderTime] = useState('09:00')
   const [reminderDays, setReminderDays] = useState<number[]>([1, 2, 3, 4, 5])
-  // remindersRef removed — 提醒检查已移到 App.tsx 全局
   const [showVoiceChat, setShowVoiceChat] = useState(false)
-
-  // ── TTS 状态 ──
-  const [ttsState, setTtsState] = useState<TtsState>('idle')
-  const [ttsIndex, setTtsIndex] = useState<number>(-1) // 正在朗读哪条消息
-  const [ttsVoices, setTtsVoices] = useState<SpeechSynthesisVoice[]>([])
-  const [ttsVoiceIdx, setTtsVoiceIdx] = useState<number>(() => {
-    const saved = localStorage.getItem('tts_voice_idx')
-    return saved ? parseInt(saved) : 0
-  })
-  const [ttsRate, setTtsRate] = useState<number>(() => {
-    const saved = localStorage.getItem('tts_rate')
-    return saved ? parseFloat(saved) : 1.0
-  })
-  const [showTtsSettings, setShowTtsSettings] = useState(false)
-  const ttsUtterRef = useRef<SpeechSynthesisUtterance | null>(null)
+  const [addingReminder, setAddingReminder] = useState(false)
 
   const scrollRef = useRef<HTMLDivElement>(null)
   const inputRef = useRef<HTMLTextAreaElement>(null)
@@ -89,32 +55,39 @@ export default function Agent() {
 
   // 加载未读通知
   useEffect(() => {
-    fetchNotifications(true).then(setNotifications).catch(() => {})
+    fetchNotifications(true).then(setNotifications).catch(e => console.warn('[Agent] 加载失败:', e))
   }, [])
 
   // ── 加载提醒列表（检查逻辑已移到 App.tsx 全局运行） ──
   useEffect(() => {
     fetchReminders().then(r => {
       setReminders(r)
-    }).catch(() => {})
+    }).catch(e => console.warn('[Agent] 加载失败:', e))
   }, [])
 
   // ── 提醒管理函数 ──
   const addReminder = async () => {
-    if (!reminderTitle.trim() || !reminderTime) return
-    const r = await createReminder({
-      title: reminderTitle.trim(),
-      remind_time: reminderTime,
-      repeat_days: reminderDays,
-    })
-    if (r) {
-      setReminders(prev => [...prev, r].sort((a, b) => a.remind_time.localeCompare(b.remind_time)))
-      setReminderTitle('')
-      setReminderTime('09:00')
-      showToast('✅ 提醒已添加')
-    } else {
+    if (!reminderTitle.trim() || !reminderTime || addingReminder) return
+    setAddingReminder(true)
+    try {
+      const r = await createReminder({
+        title: reminderTitle.trim(),
+        remind_time: reminderTime,
+        repeat_days: reminderDays,
+      })
+      if (r) {
+        setReminders(prev => [...prev, r].sort((a, b) => a.remind_time.localeCompare(b.remind_time)))
+        setReminderTitle('')
+        setReminderTime('09:00')
+        showToast('✅ 提醒已添加')
+      } else {
+        showToast('❌ 添加失败', 3000)
+      }
+    } catch (e) {
+      console.warn('[Agent] 添加提醒异常:', e)
       showToast('❌ 添加失败', 3000)
     }
+    setAddingReminder(false)
   }
 
   const toggleReminder = async (r: TaskReminder) => {
@@ -132,76 +105,6 @@ export default function Agent() {
     setToast(msg)
     setTimeout(() => setToast(''), duration)
   }
-
-  // ── 加载可用中文语音 ──
-  useEffect(() => {
-    const loadVoices = () => {
-      const all = window.speechSynthesis.getVoices()
-      const zh = all.filter(v =>
-        v.lang.startsWith('zh') || v.lang.includes('CN') || v.lang.includes('TW') || v.lang.includes('HK')
-      )
-      if (zh.length > 0) {
-        setTtsVoices(zh)
-        // 恢复上次选择，如果索引越界则重置
-        const savedIdx = parseInt(localStorage.getItem('tts_voice_idx') || '0')
-        if (savedIdx >= zh.length) {
-          setTtsVoiceIdx(0)
-          localStorage.setItem('tts_voice_idx', '0')
-        }
-      }
-    }
-    loadVoices()
-    // Chrome 需要监听 voiceschanged 事件
-    window.speechSynthesis.onvoiceschanged = loadVoices
-    return () => { window.speechSynthesis.onvoiceschanged = null }
-  }, [])
-
-  // ── TTS 语音朗读 ──
-  const ttsPlay = useCallback((text: string, msgIndex: number) => {
-    window.speechSynthesis.cancel()
-
-    const clean = stripMarkdown(text)
-    if (!clean) return
-
-    const utter = new SpeechSynthesisUtterance(clean)
-    utter.lang = 'zh-CN'
-    utter.rate = ttsRate
-    utter.pitch = 1.0
-
-    // 使用用户选择的语音
-    if (ttsVoices.length > 0 && ttsVoiceIdx < ttsVoices.length) {
-      utter.voice = ttsVoices[ttsVoiceIdx]
-    }
-
-    utter.onend = () => { setTtsState('idle'); setTtsIndex(-1) }
-    utter.onerror = () => { setTtsState('idle'); setTtsIndex(-1) }
-
-    ttsUtterRef.current = utter
-    setTtsState('playing')
-    setTtsIndex(msgIndex)
-    window.speechSynthesis.speak(utter)
-  }, [ttsVoices, ttsVoiceIdx, ttsRate])
-
-  const ttsPause = useCallback(() => {
-    window.speechSynthesis.pause()
-    setTtsState('paused')
-  }, [])
-
-  const ttsResume = useCallback(() => {
-    window.speechSynthesis.resume()
-    setTtsState('playing')
-  }, [])
-
-  const ttsStop = useCallback(() => {
-    window.speechSynthesis.cancel()
-    setTtsState('idle')
-    setTtsIndex(-1)
-  }, [])
-
-  // 组件卸载时停止朗读
-  useEffect(() => {
-    return () => { window.speechSynthesis.cancel() }
-  }, [])
 
   // ── 发送消息 ──
   const send = async (text?: string, taskType?: string) => {
@@ -263,8 +166,13 @@ export default function Agent() {
   const loadHistory = async () => {
     setShowHistory(true)
     setHistoryLoading(true)
-    const tasks = await fetchAgentTasks(30)
-    setHistory(tasks)
+    try {
+      const tasks = await fetchAgentTasks(30)
+      setHistory(tasks)
+    } catch (e) {
+      console.warn('[Agent] 加载历史失败:', e)
+      setHistory([])
+    }
     setHistoryLoading(false)
   }
 
@@ -420,7 +328,7 @@ export default function Agent() {
             {/* 添加按钮 */}
             <button
               onClick={addReminder}
-              disabled={!reminderTitle.trim()}
+              disabled={!reminderTitle.trim() || addingReminder}
               className="w-full py-3 rounded-xl bg-[var(--color-pri)] text-white text-sm font-bold disabled:opacity-40 active:scale-[0.98] transition-transform"
             >
               添加提醒
@@ -523,7 +431,7 @@ export default function Agent() {
           </button>
           {/* 定时提醒 */}
           <button
-            onClick={() => { setShowReminders(true); fetchReminders().then(r => { setReminders(r) }).catch(() => {}) }}
+            onClick={() => { setShowReminders(true); fetchReminders().then(r => { setReminders(r) }).catch(e => console.warn('[Agent] 加载失败:', e)) }}
             className={`relative text-xs px-3 py-1.5 rounded-lg border border-[var(--color-border)] text-[var(--color-k3)] bg-white`}
           >
             ⏰
@@ -532,9 +440,6 @@ export default function Agent() {
                 {reminders.filter(r => r.enabled).length}
               </span>
             )}
-          </button>
-          <button onClick={() => setShowTtsSettings(!showTtsSettings)} className={`text-xs px-3 py-1.5 rounded-lg border border-[var(--color-border)] ${showTtsSettings ? 'bg-[var(--color-pri)] text-white' : 'text-[var(--color-k3)] bg-white'}`}>
-            🔊
           </button>
           <button onClick={loadHistory} className="text-xs text-[var(--color-k3)] px-3 py-1.5 rounded-lg border border-[var(--color-border)] bg-white">
             历史
@@ -547,65 +452,6 @@ export default function Agent() {
         </div>
 
         {/* TTS 语音设置面板 */}
-        {showTtsSettings && (
-          <div className="mt-2 bg-white rounded-xl border border-[var(--color-border)] p-3 fade-in">
-            <div className="text-xs font-bold text-[var(--color-k)] mb-2">语音设置</div>
-
-            {/* 语音选择 */}
-            <div className="mb-3">
-              <div className="text-[11px] text-[var(--color-k3)] mb-1">选择语音 {ttsVoices.length > 0 ? `(${ttsVoices.length}个可用)` : '(加载中…)'}</div>
-              <div className="flex flex-col gap-1.5 max-h-[150px] overflow-y-auto">
-                {ttsVoices.map((voice, idx) => (
-                  <button
-                    key={idx}
-                    onClick={() => {
-                      setTtsVoiceIdx(idx)
-                      localStorage.setItem('tts_voice_idx', String(idx))
-                      // 试听
-                      window.speechSynthesis.cancel()
-                      const u = new SpeechSynthesisUtterance('你好，这是语音试听效果')
-                      u.voice = voice
-                      u.lang = voice.lang
-                      u.rate = ttsRate
-                      window.speechSynthesis.speak(u)
-                    }}
-                    className={`text-left text-[12px] px-3 py-2 rounded-lg border transition-colors ${
-                      idx === ttsVoiceIdx
-                        ? 'border-[var(--color-pri)] bg-[var(--color-pri-light)] text-[var(--color-pri)] font-medium'
-                        : 'border-[var(--color-border)] text-[var(--color-k2)]'
-                    }`}
-                  >
-                    <div className="font-medium">{voice.name}</div>
-                    <div className="text-[10px] text-[var(--color-k3)] mt-0.5">{voice.lang} {voice.localService ? '· 本地' : '· 在线'}</div>
-                  </button>
-                ))}
-                {ttsVoices.length === 0 && (
-                  <div className="text-[11px] text-[var(--color-k3)] py-2">未检测到中文语音，将使用系统默认</div>
-                )}
-              </div>
-            </div>
-
-            {/* 语速调节 */}
-            <div>
-              <div className="text-[11px] text-[var(--color-k3)] mb-1">语速：{ttsRate.toFixed(1)}x</div>
-              <div className="flex items-center gap-2">
-                <span className="text-[10px] text-[var(--color-k3)]">慢</span>
-                <input
-                  type="range" min="0.5" max="2.0" step="0.1"
-                  value={ttsRate}
-                  onChange={e => {
-                    const v = parseFloat(e.target.value)
-                    setTtsRate(v)
-                    localStorage.setItem('tts_rate', String(v))
-                  }}
-                  className="flex-1 h-1 accent-[var(--color-pri)]"
-                />
-                <span className="text-[10px] text-[var(--color-k3)]">快</span>
-              </div>
-            </div>
-          </div>
-        )}
-
         {/* 通知面板 */}
         {showNotifications && (
           <div className="mt-2 bg-white rounded-xl border border-[var(--color-border)] p-3 fade-in">
@@ -655,7 +501,7 @@ export default function Agent() {
           </div>
         )}
 
-        {!showTtsSettings && !showNotifications && <p className="text-[13px] text-[var(--color-k2)]">基于知识库的智能问答 · 分析 · 整理</p>}
+        {!showNotifications && <p className="text-[13px] text-[var(--color-k2)]">基于知识库的智能问答 · 分析 · 整理</p>}
       </div>
 
       {/* Chat Area */}
@@ -727,45 +573,9 @@ export default function Agent() {
                     </div>
                   )}
 
-                  {/* 操作按钮：朗读 + 存入知识库 */}
+                  {/* 存入知识库 */}
                   {msg.role === 'agent' && msg.text && !msg.text.startsWith('❌') && (
-                    <div className="mt-2 pt-2 border-t border-[var(--color-border)] flex items-center gap-2 flex-wrap">
-                      {/* TTS 朗读按钮 */}
-                      {ttsState === 'idle' || ttsIndex !== i ? (
-                        <button
-                          onClick={() => { if (ttsIndex !== -1) ttsStop(); ttsPlay(msg.text, i) }}
-                          className="text-[11px] text-[var(--color-k2)] bg-[var(--color-bg)] px-3 py-1.5 rounded-full active:scale-95 transition-transform font-medium"
-                        >
-                          🔊 朗读
-                        </button>
-                      ) : (
-                        <>
-                          {ttsState === 'playing' && (
-                            <button
-                              onClick={ttsPause}
-                              className="text-[11px] text-amber-600 bg-amber-50 px-3 py-1.5 rounded-full active:scale-95 transition-transform font-medium"
-                            >
-                              ⏸ 暂停
-                            </button>
-                          )}
-                          {ttsState === 'paused' && (
-                            <button
-                              onClick={ttsResume}
-                              className="text-[11px] text-green-600 bg-green-50 px-3 py-1.5 rounded-full active:scale-95 transition-transform font-medium"
-                            >
-                              ▶ 继续
-                            </button>
-                          )}
-                          <button
-                            onClick={ttsStop}
-                            className="text-[11px] text-red-500 bg-red-50 px-3 py-1.5 rounded-full active:scale-95 transition-transform font-medium"
-                          >
-                            ⏹ 停止
-                          </button>
-                        </>
-                      )}
-
-                      {/* 存入知识库 */}
+                    <div className="mt-2 pt-2 border-t border-[var(--color-border)] flex items-center gap-2">
                       <button
                         onClick={async () => {
                           try {

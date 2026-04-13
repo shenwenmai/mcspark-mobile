@@ -82,7 +82,11 @@ export async function executeAgent(req: AgentRequest): Promise<AgentResponse> {
     throw new Error(`Agent 调用失败 (${res.status}): ${errText.substring(0, 200)}`)
   }
 
-  return await res.json()
+  try {
+    return await res.json()
+  } catch {
+    throw new Error('Agent 返回的不是有效 JSON')
+  }
 }
 
 // ── 获取历史任务 ──
