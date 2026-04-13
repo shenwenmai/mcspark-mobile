@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef } from 'react'
 import { isConfigured, getSupabase } from './lib/supabase'
 import { fetchReminders, updateReminder as updateReminderApi, createNotification, type TaskReminder } from './lib/agent'
+import { setupPushSubscription } from './lib/push'
 import Login from './pages/Login'
 import Capture from './pages/Capture'
 import Tasks from './pages/Tasks'
@@ -209,6 +210,11 @@ export default function App() {
   // ── 全局提醒检查器（不依赖任何 tab） ──
   useEffect(() => {
     if (!isConfigured()) return
+
+    // 注册 Web Push 推送（后台也能收到通知）
+    setupPushSubscription().then(status => {
+      console.log('[Push] 状态:', status)
+    })
 
     // 加载提醒
     fetchReminders().then(r => {
