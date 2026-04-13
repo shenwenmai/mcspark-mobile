@@ -171,14 +171,46 @@ async function fetchUrlContent(url: string): Promise<string> {
   throw new Error('URL 抓取失败: ' + errors.join('; '))
 }
 
-// 自动检测任务类型
-function detectTaskType(instruction: string): string {
+// ── 意图检测 ──
+interface DetectedIntent {
+  taskType: string
+  actions: string[] // 'save_to_vault' | 'batch_tag' | 'batch_category'
+  saveToVault: boolean
+  batchTag?: string      // 要批量添加的标签
+  batchCategory?: string // 要批量修改的分类
+}
+
+function detectIntent(instruction: string): DetectedIntent {
   const text = instruction.toLowerCase()
-  if (/摘要|总结|概括|归纳|整合|汇总|要点|综述/.test(text)) return 'summarize'
-  if (/分析|对比|比较|评估|洞察|趋势|规律|统计|盘点|领域/.test(text)) return 'analyze'
-  if (/整理|分类|归类|标签|重复|合并|清理/.test(text)) return 'organize'
-  if (/今日|每日|日报|周报|最近|最新/.test(text)) return 'digest'
-  return 'chat'
+  const actions: string[] = []
+
+  // 检测任务类型
+  let taskType = 'chat'
+  if (/摘要|总结|概括|归纳|整合|汇总|要点|综述/.test(text)) taskType = 'summarize'
+  else if (/分析|对比|比较|评估|洞察|趋势|规律|统计|盘点|领域/.test(text)) taskType = 'analyze'
+  else if (/整理|分类|归类|标签|重复|合并|清理/.test(text)) taskType = 'organize'
+  else if (/今日|每日|日报|周报|最近|最新/.test(text)) taskType = 'digest'
+
+  // 检测存入意图
+  const saveToVault = /存入|保存|收藏|存到|加入知识库|存进|写入|记录下来|收录/.test(text)
+  if (saveToVault) actions.push('save_to_vault')
+
+  // 检测批量标签意图：如 "给所有AI相关的条目加上'人工智能'标签"
+  const tagMatch = text.match(/(?:加上|添加|打上|设为|标记为)[""'']?([^""''，。,.\s]{1,10})[""'']?(?:标签|tag)/i)
+  const batchTag = tagMatch ? tagMatch[1] : undefined
+  if (batchTag) actions.push('batch_tag')
+
+  // 检测批量分类意图
+  const catMatch = text.match(/(?:分类为|归类为|移到|移至)[""'']?([^""''，。,.\s]{1,10})[""'']?/i)
+  const batchCategory = catMatch ? catMatch[1] : undefined
+  if (batchCategory) actions.push('batch_category')
+
+  return { taskType, actions, saveToVault, batchTag, batchCategory }
+}
+
+// 保持向后兼容
+function detectTaskType(instruction: string): string {
+  return detectIntent(instruction).taskType
 }
 
 async function fetchVaultContext(
@@ -225,6 +257,13 @@ function buildSystemPrompt(taskType: string, vaultItems: Array<{ id: string; tit
   const base = `你是 AIVault 个人知识管理助手。用户有一个包含 ${totalItems} 条知识资产的库。
 你的角色是帮助用户：查询知识、分析内容、生成摘要、整理归类、回答基于知识库的问题。
 
+你的能力：
+- 阅读链接：用户粘贴 URL，你能读取网页内容并分析
+- 存入知识库：用户说"存入/保存/收藏"时，系统会自动将你的回答存入知识库
+- 批量标签：用户说"给XX加上YY标签"时，系统会自动批量操作
+- 批量分类：用户说"把XX分类为YY"时，系统会自动执行
+- 多轮对话：你能记住之前几轮对话的上下文
+
 回答规则：
 - 用中文回答
 - **必须使用 Markdown 格式**排版，包括标题(##)、加粗(**text**)、列表(- item)、分隔线(---)、引用(>)等
@@ -233,7 +272,8 @@ function buildSystemPrompt(taskType: string, vaultItems: Array<{ id: string; tit
 - 数据统计用表格或列表呈现
 - 如果知识库中没有相关信息，诚实说明
 - 不要编造不存在的内容
-- 分析类任务必须覆盖所有提供的知识条目，不要遗漏`
+- 分析类任务必须覆盖所有提供的知识条目，不要遗漏
+- 如果用户要求存入/保存，你的回答内容将作为知识条目被存入，请确保内容完整、结构清晰`
 
   if (vaultItems.length === 0) return base + '\n\n（当前没有找到相关的知识库内容）'
 
@@ -278,13 +318,14 @@ async function handleRequest(req: Request): Promise<Response> {
       return new Response(JSON.stringify({ error: 'GEMINI_API_KEY 未配置' }), { status: 500, headers: { ...corsHeaders, 'Content-Type': 'application/json' } })
     }
 
-    // 如果前端传了 chat，自动检测是否应该升级
-    if (task_type === 'chat') {
-      const detected = detectTaskType(instruction)
-      if (detected !== 'chat') {
-        console.log('[Agent] auto-detected task_type:', detected)
-        task_type = detected
-      }
+    // 意图检测（含任务类型 + 动作）
+    const intent = detectIntent(instruction)
+    if (task_type === 'chat' && intent.taskType !== 'chat') {
+      console.log('[Agent] auto-detected task_type:', intent.taskType)
+      task_type = intent.taskType
+    }
+    if (intent.actions.length > 0) {
+      console.log('[Agent] detected actions:', intent.actions)
     }
 
     let taskId = task_id
@@ -327,6 +368,134 @@ async function handleRequest(req: Request): Promise<Response> {
     }
 
     const geminiResult = await callGemini(instruction, systemPrompt, history)
+
+    // ── 后续动作执行 ──
+    const executedActions: string[] = []
+    let savedItemId: string | null = null
+
+    // 动作1：自动存入知识库
+    if (intent.saveToVault && geminiResult.text) {
+      try {
+        // 用 AI 提取标题（取第一行非空文本，去掉 Markdown 符号）
+        const firstLine = geminiResult.text.split('\n').find(l => l.trim().length > 0) || ''
+        const autoTitle = firstLine.replace(/^#+\s*/, '').replace(/\*\*/g, '').substring(0, 60) || '来自 Agent'
+
+        // 如果有 URL，用 URL 作为来源
+        const itemSource = urls.length > 0 ? urls[0] : 'agent'
+
+        // 智能分类：让 AI 给个分类
+        let autoCategory = 'note'
+        const catKeywords: Record<string, string[]> = {
+          'tech': ['代码', '编程', '技术', '开发', 'API', '框架', '算法'],
+          'product': ['产品', '设计', '用户', '需求', '功能', 'PRD'],
+          'business': ['商业', '营销', '增长', '运营', '市场', '投资'],
+          'reading': ['文章', '书', '阅读', '读书', '笔记', '摘录'],
+          'idea': ['想法', '灵感', '创意', '思考', '观点'],
+        }
+        const resultLower = geminiResult.text.toLowerCase()
+        for (const [cat, words] of Object.entries(catKeywords)) {
+          if (words.some(w => resultLower.includes(w))) { autoCategory = cat; break }
+        }
+
+        const newId = Date.now().toString(36) + Math.random().toString(36).substring(2, 8)
+        const now = Date.now()
+        const newItem = {
+          id: newId,
+          title: autoTitle,
+          summary: geminiResult.text.substring(0, 200),
+          content: geminiResult.text,
+          category: autoCategory,
+          layer: 'wiki',
+          tags: urls.length > 0 ? ['agent-capture', 'url'] : ['agent-capture'],
+          source: itemSource,
+          status: 'active',
+          createdAt: now,
+          updatedAt: now,
+        }
+
+        const { error: saveErr } = await sb.from('vault_items').upsert({
+          id: newId,
+          data: newItem,
+          updated_at: new Date(now).toISOString(),
+          deleted: false,
+        })
+
+        if (saveErr) {
+          console.error('[Agent] auto-save error:', saveErr.message)
+        } else {
+          savedItemId = newId
+          executedActions.push('save_to_vault')
+          console.log('[Agent] auto-saved to vault:', newId, autoTitle)
+        }
+      } catch (e) {
+        console.error('[Agent] auto-save exception:', (e as Error).message)
+      }
+    }
+
+    // 动作2：批量添加标签
+    if (intent.batchTag && vaultItems.length > 0) {
+      try {
+        let taggedCount = 0
+        for (const item of vaultItems) {
+          const tags = item.tags || []
+          if (!tags.includes(intent.batchTag)) {
+            tags.push(intent.batchTag)
+            const updatedItem = { ...item, tags, updatedAt: Date.now() }
+            await sb.from('vault_items').upsert({
+              id: item.id,
+              data: updatedItem,
+              updated_at: new Date().toISOString(),
+              deleted: false,
+            })
+            taggedCount++
+          }
+        }
+        if (taggedCount > 0) {
+          executedActions.push(`batch_tag:${taggedCount}`)
+          console.log('[Agent] batch tagged', taggedCount, 'items with:', intent.batchTag)
+        }
+      } catch (e) {
+        console.error('[Agent] batch tag error:', (e as Error).message)
+      }
+    }
+
+    // 动作3：批量修改分类
+    if (intent.batchCategory && vaultItems.length > 0) {
+      try {
+        let catCount = 0
+        for (const item of vaultItems) {
+          if (item.category !== intent.batchCategory) {
+            const updatedItem = { ...item, category: intent.batchCategory, updatedAt: Date.now() }
+            await sb.from('vault_items').upsert({
+              id: item.id,
+              data: updatedItem,
+              updated_at: new Date().toISOString(),
+              deleted: false,
+            })
+            catCount++
+          }
+        }
+        if (catCount > 0) {
+          executedActions.push(`batch_category:${catCount}`)
+          console.log('[Agent] batch categorized', catCount, 'items to:', intent.batchCategory)
+        }
+      } catch (e) {
+        console.error('[Agent] batch category error:', (e as Error).message)
+      }
+    }
+
+    // 在结果末尾追加动作执行报告
+    let finalResult = geminiResult.text
+    if (executedActions.length > 0) {
+      const report: string[] = ['\n\n---\n**✅ 已自动执行：**']
+      for (const act of executedActions) {
+        if (act === 'save_to_vault') report.push('- 已存入知识库')
+        else if (act.startsWith('batch_tag:')) report.push(`- 已为 ${act.split(':')[1]} 条知识添加标签「${intent.batchTag}」`)
+        else if (act.startsWith('batch_category:')) report.push(`- 已将 ${act.split(':')[1]} 条知识分类修改为「${intent.batchCategory}」`)
+      }
+      finalResult += report.join('\n')
+    }
+
     const duration = Date.now() - startTime
     if (taskId) {
       await sb.from('agent_logs').insert({
@@ -334,12 +503,14 @@ async function handleRequest(req: Request): Promise<Response> {
         input_tokens: geminiResult.inputTokens, output_tokens: geminiResult.outputTokens, duration_ms: duration, success: true,
       })
       await sb.from('agent_tasks').update({
-        status: 'done', result: geminiResult.text, related_item_ids: vaultItems.map(i => i.id), completed_at: new Date().toISOString(),
+        status: 'done', result: finalResult, related_item_ids: vaultItems.map(i => i.id), completed_at: new Date().toISOString(),
       }).eq('id', taskId)
     }
     return new Response(JSON.stringify({
-      success: true, task_id: taskId, result: geminiResult.text,
+      success: true, task_id: taskId, result: finalResult,
       related_items: vaultItems.map(i => ({ id: i.id, title: i.title })),
+      saved_item_id: savedItemId,
+      executed_actions: executedActions,
       stats: { duration_ms: duration, input_tokens: geminiResult.inputTokens, output_tokens: geminiResult.outputTokens, context_items: vaultItems.length, total_items: total },
     }), { headers: { ...corsHeaders, 'Content-Type': 'application/json' } })
   } catch (e) {

@@ -25,6 +25,8 @@ export interface AgentResponse {
   result?: string
   error?: string
   related_items?: AgentRelatedItem[]
+  saved_item_id?: string
+  executed_actions?: string[]
   stats?: {
     duration_ms: number
     input_tokens: number
