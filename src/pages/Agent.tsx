@@ -9,7 +9,14 @@ function PushStatus() {
   const [status, setStatus] = useState<string>('检查中…')
   const [enabling, setEnabling] = useState(false)
 
+  const isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent)
+  const isStandalone = (window.navigator as any).standalone === true || window.matchMedia('(display-mode: standalone)').matches
+
   useEffect(() => {
+    if (isIOS && !isStandalone) {
+      setStatus('ios-browser')
+      return
+    }
     getPushStatus().then(s => {
       if (s === 'subscribed') setStatus('已开启')
       else if (s === 'unsupported') setStatus('不支持')
@@ -36,11 +43,34 @@ function PushStatus() {
     )
   }
 
+  // iOS 在浏览器中打开（未添加到主屏幕）
+  if (status === 'ios-browser') {
+    return (
+      <div className="mt-3 bg-indigo-50 rounded-xl p-3 border border-indigo-200">
+        <div className="text-[12px] text-indigo-700 font-bold">📲 如何收到后台提醒推送</div>
+        <div className="text-[11px] text-indigo-600 mt-2 leading-relaxed">
+          iPhone 必须添加到主屏幕才能收推送：
+        </div>
+        <ol className="text-[11px] text-indigo-600 mt-1.5 ml-4 list-decimal leading-relaxed">
+          <li>用 <b>Safari</b> 打开本页面</li>
+          <li>点底部 <b>分享按钮</b>（方框+箭头 ↑）</li>
+          <li>选 <b>"添加到主屏幕"</b></li>
+          <li>从主屏幕图标打开，即可收推送</li>
+        </ol>
+        <div className="text-[10px] text-indigo-400 mt-2">* iOS Chrome/其他浏览器不支持推送，只有 Safari PWA 才行</div>
+      </div>
+    )
+  }
+
   if (status === '不支持') {
     return (
       <div className="mt-3 bg-amber-50 rounded-xl p-3 border border-amber-200">
-        <div className="text-[12px] text-amber-700 font-medium">⚠ 浏览器不支持推送</div>
-        <div className="text-[11px] text-amber-600 mt-1">请使用 Chrome 浏览器，提醒仅在页面打开时生效。</div>
+        <div className="text-[12px] text-amber-700 font-medium">⚠ 当前环境不支持推送</div>
+        <div className="text-[11px] text-amber-600 mt-1">
+          {isIOS
+            ? '请用 Safari 打开并添加到主屏幕，从主屏幕图标打开后即可开启推送。'
+            : '请使用 Chrome 浏览器以获得推送通知支持。'}
+        </div>
       </div>
     )
   }
@@ -49,7 +79,11 @@ function PushStatus() {
     return (
       <div className="mt-3 bg-red-50 rounded-xl p-3 border border-red-200">
         <div className="text-[12px] text-red-700 font-medium">❌ 通知权限被拒绝</div>
-        <div className="text-[11px] text-red-600 mt-1">请到 Chrome 设置 → 网站设置 → 通知 中允许本网站，然后回来重试。</div>
+        <div className="text-[11px] text-red-600 mt-1">
+          {isIOS
+            ? '请到 iPhone 设置 → 通知 → McSpark 中允许通知。'
+            : '请到浏览器设置 → 网站设置 → 通知 中允许本网站。'}
+        </div>
         <button onClick={enable} disabled={enabling}
           className="mt-2 text-[11px] text-white bg-red-500 px-3 py-1.5 rounded-lg font-medium disabled:opacity-50">
           {enabling ? '重试中…' : '重试'}
@@ -58,16 +92,20 @@ function PushStatus() {
     )
   }
 
-  return (
-    <div className="mt-3 bg-amber-50 rounded-xl p-3 border border-amber-200">
-      <div className="text-[12px] text-amber-700 font-medium">🔔 开启后台推送通知</div>
-      <div className="text-[11px] text-amber-600 mt-1">开启后，锁屏/关闭页面也能收到提醒通知。</div>
-      <button onClick={enable} disabled={enabling}
-        className="mt-2 text-[11px] text-white bg-amber-500 px-3 py-1.5 rounded-lg font-medium disabled:opacity-50">
-        {enabling ? '开启中…' : '开启推送通知'}
-      </button>
-    </div>
-  )
+  if (status === '未开启') {
+    return (
+      <div className="mt-3 bg-amber-50 rounded-xl p-3 border border-amber-200">
+        <div className="text-[12px] text-amber-700 font-medium">🔔 开启后台推送通知</div>
+        <div className="text-[11px] text-amber-600 mt-1">开启后，锁屏/关闭页面也能收到提醒通知。</div>
+        <button onClick={enable} disabled={enabling}
+          className="mt-2 text-[11px] text-white bg-amber-500 px-3 py-1.5 rounded-lg font-medium disabled:opacity-50">
+          {enabling ? '开启中…' : '开启推送通知'}
+        </button>
+      </div>
+    )
+  }
+
+  return null
 }
 
 interface ChatMessage {
