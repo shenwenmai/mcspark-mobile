@@ -26,6 +26,10 @@ export default function VoiceChat({ onClose, chatHistory }: Props) {
   const [currentReply, setCurrentReply] = useState('')
   const [transcript, setTranscript] = useState<TranscriptEntry[]>([])
   const [showTranscript, setShowTranscript] = useState(true)
+  const [ttsEnabled, setTtsEnabled] = useState(() => {
+    const saved = localStorage.getItem('voice_tts_enabled')
+    return saved !== 'false' // 默认开启
+  })
 
   const recognitionRef = useRef<SpeechRecognitionInstance | null>(null)
   const timerRef = useRef<number>(0)
@@ -62,10 +66,40 @@ export default function VoiceChat({ onClose, chatHistory }: Props) {
     }
   }, [])
 
+  // 选择最佳中文语音
+  const pickBestVoice = useCallback((): SpeechSynthesisVoice | null => {
+    const voices = speechSynthesis.getVoices()
+    if (voices.length === 0) return null
+
+    // 按优先级排序：优先选女声、本地引擎、高质量
+    const zhVoices = voices.filter(v =>
+      v.lang.startsWith('zh') || v.lang.startsWith('cmn')
+    )
+    if (zhVoices.length === 0) return null
+
+    // 优先级：Google 高质量 > 本地女声 > 本地 > 任意中文
+    const preferredNames = [
+      'Google 普通话', 'Google 国语', 'Google Mandarin',
+      'Tingting', 'Lili', 'Meijia',  // Apple 高质量
+      'Microsoft Xiaoxiao', 'Microsoft Yunxi', // Edge
+    ]
+
+    for (const name of preferredNames) {
+      const match = zhVoices.find(v => v.name.includes(name))
+      if (match) return match
+    }
+
+    // 本地引擎优先
+    const local = zhVoices.find(v => v.localService)
+    if (local) return local
+
+    return zhVoices[0]
+  }, [])
+
   // 语音播报
   const speak = useCallback((text: string): Promise<void> => {
     return new Promise((resolve) => {
-      if (!('speechSynthesis' in window)) {
+      if (!('speechSynthesis' in window) || !ttsEnabled) {
         resolve()
         return
       }
@@ -83,7 +117,7 @@ export default function VoiceChat({ onClose, chatHistory }: Props) {
 
       if (!clean) { resolve(); return }
 
-      // 分段播报（每段不超过 150 字，手机 TTS 对长文本容易出问题）
+      // 分段播报（每段不超过 150 字）
       const segments: string[] = []
       let remaining = clean
       while (remaining.length > 0) {
@@ -100,6 +134,8 @@ export default function VoiceChat({ onClose, chatHistory }: Props) {
         remaining = remaining.substring(cut + 1)
       }
 
+      const bestVoice = pickBestVoice()
+
       let idx = 0
       const speakNext = () => {
         if (idx >= segments.length) {
@@ -108,30 +144,20 @@ export default function VoiceChat({ onClose, chatHistory }: Props) {
         }
         const utt = new SpeechSynthesisUtterance(segments[idx])
         utt.lang = 'zh-CN'
-        utt.rate = 1.05
-        utt.pitch = 1.0
+        utt.rate = 1.0
+        utt.pitch = 1.05
         utt.volume = 1.0
-
-        // 选择中文语音
-        const voices = speechSynthesis.getVoices()
-        const zhVoice = voices.find(v => v.lang.startsWith('zh') && v.localService)
-          || voices.find(v => v.lang.startsWith('zh'))
-        if (zhVoice) utt.voice = zhVoice
+        if (bestVoice) utt.voice = bestVoice
 
         utt.onend = () => { idx++; speakNext() }
-        utt.onerror = (e) => {
-          console.warn('[VoiceChat] TTS 播报错误:', e)
-          idx++
-          speakNext()
-        }
+        utt.onerror = () => { idx++; speakNext() }
         speechSynthesis.speak(utt)
       }
 
-      // Chrome 有 bug：如果 speechSynthesis 处于暂停状态，新的 speak 会挂起
       speechSynthesis.cancel()
       setTimeout(speakNext, 50)
     })
-  }, [])
+  }, [ttsEnabled, pickBestVoice])
 
   // 发送到 Agent 后端
   const sendToAgent = useCallback(async (userText: string) => {
@@ -348,13 +374,25 @@ export default function VoiceChat({ onClose, chatHistory }: Props) {
       {/* 顶部栏 */}
       <div className="shrink-0 flex justify-between items-center px-5 pt-safe mt-3">
         <span className="text-white/30 text-xs">AI 语音助手 · Agent</span>
-        <div className="flex items-center gap-3">
+        <div className="flex items-center gap-2">
+          {/* 语音播报开关 */}
+          <button
+            onClick={() => {
+              const next = !ttsEnabled
+              setTtsEnabled(next)
+              localStorage.setItem('voice_tts_enabled', String(next))
+              if (!next) stopSpeaking()
+            }}
+            className={`text-xs px-3 py-1 rounded-full transition-colors ${ttsEnabled ? 'bg-green-500/30 text-green-300' : 'bg-white/5 text-white/30'}`}
+          >
+            {ttsEnabled ? '🔊 语音' : '🔇 静音'}
+          </button>
           {hasText && (
             <button
               onClick={() => setShowTranscript(!showTranscript)}
               className={`text-xs px-3 py-1 rounded-full transition-colors ${showTranscript ? 'bg-white/20 text-white' : 'bg-white/5 text-white/40'}`}
             >
-              {showTranscript ? '隐藏记录' : '显示记录'}
+              {showTranscript ? '隐藏' : '记录'}
             </button>
           )}
           <button onClick={endCall} className="text-white/40 text-lg px-2 py-1 active:text-white/80">✕</button>
