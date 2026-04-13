@@ -29,6 +29,7 @@ export class GeminiLiveSession {
   private silentGain: GainNode | null = null
   private playQueue: Float32Array[] = []
   private isPlaying = false
+  private currentSource: AudioBufferSourceNode | null = null
   private cb: LiveCallbacks
   private _state: LiveState = 'idle'
 
@@ -160,6 +161,7 @@ export class GeminiLiveSession {
   }
 
   stop() {
+    if (this.currentSource) { try { this.currentSource.stop() } catch { /* ignore */ }; this.currentSource = null }
     if (this.processor) { this.processor.disconnect(); this.processor = null }
     if (this.source) { this.source.disconnect(); this.source = null }
     if (this.silentGain) { this.silentGain.disconnect(); this.silentGain = null }
@@ -176,6 +178,19 @@ export class GeminiLiveSession {
     this.cb.onStateChange(s)
   }
 
+  // ── 打断播放 ──
+  private interruptPlayback() {
+    // 停止当前正在播放的音频
+    if (this.currentSource) {
+      try { this.currentSource.stop() } catch { /* 可能已停止 */ }
+      this.currentSource = null
+    }
+    // 清空待播放队列
+    this.playQueue = []
+    this.isPlaying = false
+    console.log('[GeminiLive] 播放已打断')
+  }
+
   // ── 消息处理 ──
   private handleMsg(data: Record<string, unknown>) {
     // Setup 完成 → 开始收音
@@ -186,8 +201,21 @@ export class GeminiLiveSession {
     }
 
     // AI 回复
-    const sc = data.serverContent as { modelTurn?: { parts?: Array<{ inlineData?: { data: string }; text?: string }> }; turnComplete?: boolean } | undefined
+    const sc = data.serverContent as {
+      modelTurn?: { parts?: Array<{ inlineData?: { data: string }; text?: string }> }
+      turnComplete?: boolean
+      interrupted?: boolean
+    } | undefined
     if (sc) {
+      // 服务器发来打断信号（用户开始说话，AI 停止回复）
+      if (sc.interrupted) {
+        console.log('[GeminiLive] 收到打断信号')
+        this.interruptPlayback()
+        this.cb.onTranscript?.('', true) // 结束当前文字
+        this.setState('listening')
+        return
+      }
+
       if (sc.modelTurn?.parts) {
         for (const part of sc.modelTurn.parts) {
           // 音频数据
@@ -276,7 +304,12 @@ export class GeminiLiveSession {
     const src = this.audioCtx.createBufferSource()
     src.buffer = buf
     src.connect(this.audioCtx.destination)
-    src.onended = () => { this.isPlaying = false; this.playNext() }
+    this.currentSource = src
+    src.onended = () => {
+      this.currentSource = null
+      this.isPlaying = false
+      this.playNext()
+    }
     src.start()
   }
 
