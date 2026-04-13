@@ -178,7 +178,7 @@ export class GeminiLiveSession {
       // 降采样 → Int16 → base64 → 发送
       const down = this.downsample(raw, nativeRate, INPUT_RATE)
       const i16 = this.f32ToI16(down)
-      const b64 = this.bufToB64(i16.buffer)
+      const b64 = this.bufToB64(i16.buffer as ArrayBuffer)
 
       this.ws!.send(JSON.stringify({
         realtimeInput: {
@@ -241,7 +241,7 @@ export class GeminiLiveSession {
     const bin = atob(b64)
     const bytes = new Uint8Array(bin.length)
     for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i)
-    return new Int16Array(bytes.buffer)
+    return new Int16Array(bytes.buffer as ArrayBuffer)
   }
 
   private bufToB64(buf: ArrayBuffer): string {
