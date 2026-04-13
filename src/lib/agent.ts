@@ -156,6 +156,59 @@ export async function markAllNotificationsRead(): Promise<void> {
   await sb.from('agent_notifications').update({ read: true }).eq('read', false)
 }
 
+// ── 定时提醒 ──
+export interface TaskReminder {
+  id: string
+  title: string
+  remind_time: string    // "HH:MM" 24小时制
+  repeat_days: number[]  // 0=周日, 1=周一 ... 6=周六
+  enabled: boolean
+  last_triggered_date: string | null
+  created_at: string
+}
+
+export async function fetchReminders(): Promise<TaskReminder[]> {
+  const sb = getSupabase()
+  if (!sb) return []
+  try {
+    const { data, error } = await sb.from('task_reminders').select('*').order('remind_time')
+    if (error) { console.warn('[Agent] fetchReminders error:', error.message); return [] }
+    return data || []
+  } catch (e) {
+    console.warn('[Agent] fetchReminders exception:', (e as Error).message)
+    return []
+  }
+}
+
+export async function createReminder(r: { title: string; remind_time: string; repeat_days: number[] }): Promise<TaskReminder | null> {
+  const sb = getSupabase()
+  if (!sb) return null
+  const { data, error } = await sb.from('task_reminders').insert(r).select().single()
+  if (error) { console.warn('[Agent] createReminder error:', error.message); return null }
+  return data
+}
+
+export async function updateReminder(id: string, updates: Partial<TaskReminder>): Promise<void> {
+  const sb = getSupabase()
+  if (!sb) return
+  const { error } = await sb.from('task_reminders').update(updates).eq('id', id)
+  if (error) console.warn('[Agent] updateReminder error:', error.message)
+}
+
+export async function deleteReminder(id: string): Promise<void> {
+  const sb = getSupabase()
+  if (!sb) return
+  const { error } = await sb.from('task_reminders').delete().eq('id', id)
+  if (error) console.warn('[Agent] deleteReminder error:', error.message)
+}
+
+export async function createNotification(n: { type: string; title: string; content: string }): Promise<void> {
+  const sb = getSupabase()
+  if (!sb) return
+  const { error } = await sb.from('agent_notifications').insert(n)
+  if (error) console.warn('[Agent] createNotification error:', error.message)
+}
+
 // ── 预设快捷指令 ──
 export const QUICK_COMMANDS = [
   { label: '📊 今日摘要', instruction: '生成今日知识库摘要，列出最新添加的内容和关键洞察', task_type: 'digest' as const },

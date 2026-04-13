@@ -168,6 +168,64 @@ ${weekItems.slice(0, 20).map((i, idx) => `${idx + 1}. ${i.title || '无标题'} 
   }
 }
 
+// ── 定时提醒检查（后端兜底） ──
+async function checkReminders(): Promise<{ success: boolean; message: string }> {
+  const sb = getSupabase()
+
+  try {
+    // 获取中国时间 (UTC+8)
+    const now = new Date()
+    const chinaMs = now.getTime() + 8 * 60 * 60 * 1000
+    const china = new Date(chinaMs)
+    const currentHH = String(china.getUTCHours()).padStart(2, '0')
+    const currentMM = china.getUTCMinutes()
+    const currentDay = china.getUTCDay() // 0=Sun
+    const today = china.toISOString().split('T')[0]
+
+    // 30分钟窗口
+    const windowStart = currentMM - (currentMM % 30)
+    const windowEnd = windowStart + 29
+
+    const { data: reminders, error } = await sb
+      .from('task_reminders')
+      .select('*')
+      .eq('enabled', true)
+
+    if (error) throw new Error('读取提醒失败: ' + error.message)
+
+    let triggered = 0
+    for (const r of reminders || []) {
+      const [hh, mmStr] = r.remind_time.split(':')
+      const mm = parseInt(mmStr)
+      if (hh !== currentHH) continue
+      if (mm < windowStart || mm > windowEnd) continue
+      if (!r.repeat_days.includes(currentDay)) continue
+      if (r.last_triggered_date === today) continue
+
+      // 写入通知
+      await sb.from('agent_notifications').insert({
+        type: 'reminder',
+        title: '⏰ ' + r.title,
+        content: `定时提醒：${r.title}\n时间：${r.remind_time}`,
+      })
+
+      // 标记已触发
+      await sb.from('task_reminders')
+        .update({ last_triggered_date: today })
+        .eq('id', r.id)
+
+      triggered++
+    }
+
+    console.log(`[Cron] check_reminders: ${triggered} triggered`)
+    return { success: true, message: `检查完毕，触发了 ${triggered} 个提醒` }
+  } catch (e) {
+    const errMsg = (e as Error).message
+    console.error('[Cron] check_reminders failed:', errMsg)
+    return { success: false, message: errMsg }
+  }
+}
+
 // ── 请求处理 ──
 Deno.serve(async (req: Request) => {
   if (req.method === 'OPTIONS') return new Response('ok', { headers: corsHeaders })
@@ -194,7 +252,17 @@ Deno.serve(async (req: Request) => {
       for (const name of Object.keys(CRON_JOBS)) {
         results[name] = await runCronJob(name)
       }
+      results['check_reminders'] = await checkReminders()
       return new Response(JSON.stringify({ success: true, results }), {
+        headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+      })
+    }
+
+    // 提醒检查
+    if (jobName === 'check_reminders') {
+      const result = await checkReminders()
+      return new Response(JSON.stringify(result), {
+        status: result.success ? 200 : 500,
         headers: { ...corsHeaders, 'Content-Type': 'application/json' },
       })
     }

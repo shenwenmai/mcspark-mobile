@@ -1,6 +1,6 @@
 import { useState, useRef, useEffect, useCallback } from 'react'
 import ReactMarkdown from 'react-markdown'
-import { executeAgent, fetchAgentTasks, fetchNotifications, markNotificationRead, markAllNotificationsRead, QUICK_COMMANDS, type AgentTask, type AgentResponse, type AgentNotification } from '../lib/agent'
+import { executeAgent, fetchAgentTasks, fetchNotifications, markNotificationRead, markAllNotificationsRead, fetchReminders, createReminder, updateReminder as updateReminderApi, deleteReminder as deleteReminderApi, createNotification, QUICK_COMMANDS, type AgentTask, type AgentResponse, type AgentNotification, type TaskReminder } from '../lib/agent'
 import { captureItem } from '../lib/db'
 
 interface ChatMessage {
@@ -47,6 +47,14 @@ export default function Agent() {
   const [notifications, setNotifications] = useState<AgentNotification[]>([])
   const [showNotifications, setShowNotifications] = useState(false)
 
+  // ── 定时提醒状态 ──
+  const [reminders, setReminders] = useState<TaskReminder[]>([])
+  const [showReminders, setShowReminders] = useState(false)
+  const [reminderTitle, setReminderTitle] = useState('')
+  const [reminderTime, setReminderTime] = useState('09:00')
+  const [reminderDays, setReminderDays] = useState<number[]>([1, 2, 3, 4, 5])
+  const remindersRef = useRef<TaskReminder[]>([])
+
   // ── TTS 状态 ──
   const [ttsState, setTtsState] = useState<TtsState>('idle')
   const [ttsIndex, setTtsIndex] = useState<number>(-1) // 正在朗读哪条消息
@@ -81,6 +89,112 @@ export default function Agent() {
   useEffect(() => {
     fetchNotifications(true).then(setNotifications).catch(() => {})
   }, [])
+
+  // ── 浏览器通知权限 + 定时提醒检查器 ──
+  useEffect(() => { remindersRef.current = reminders }, [reminders])
+
+  useEffect(() => {
+    // 请求通知权限
+    if ('Notification' in window && Notification.permission === 'default') {
+      Notification.requestPermission()
+    }
+
+    // 加载提醒列表
+    fetchReminders().then(r => {
+      setReminders(r)
+      remindersRef.current = r
+    }).catch(() => {})
+
+    // 每 60 秒检查是否有到期提醒
+    const timer = setInterval(async () => {
+      const list = remindersRef.current
+      if (list.length === 0) return
+
+      const now = new Date()
+      const hh = String(now.getHours()).padStart(2, '0')
+      const mm = String(now.getMinutes()).padStart(2, '0')
+      const currentTime = `${hh}:${mm}`
+      const currentDay = now.getDay()
+      const today = now.toISOString().split('T')[0]
+
+      for (const r of list) {
+        if (!r.enabled) continue
+        if (r.remind_time !== currentTime) continue
+        if (!r.repeat_days.includes(currentDay)) continue
+        if (r.last_triggered_date === today) continue
+
+        // 触发浏览器系统通知
+        if ('Notification' in window && Notification.permission === 'granted') {
+          new Notification('⏰ ' + r.title, {
+            body: `提醒时间：${r.remind_time}`,
+            icon: '/favicon.svg',
+            tag: r.id,
+            requireInteraction: true,
+          })
+        }
+
+        // 写入通知表（🔔 铃铛也能看到）
+        await createNotification({
+          type: 'reminder',
+          title: '⏰ ' + r.title,
+          content: `定时提醒：${r.title}\n时间：${r.remind_time}`,
+        })
+
+        // 标记今天已触发
+        await updateReminderApi(r.id, { last_triggered_date: today })
+        r.last_triggered_date = today
+      }
+
+      // 同时拉取新通知（含 cron 推送的）
+      try {
+        const fresh = await fetchNotifications(true)
+        if (fresh.length > 0) {
+          setNotifications(fresh)
+          // 对新通知也弹系统通知
+          for (const n of fresh) {
+            if ('Notification' in window && Notification.permission === 'granted') {
+              new Notification(n.title, {
+                body: n.content.substring(0, 100),
+                icon: '/favicon.svg',
+                tag: n.id,
+              })
+            }
+          }
+        }
+      } catch { /* ignore */ }
+    }, 60000) // 每分钟检查
+
+    return () => clearInterval(timer)
+  }, [])
+
+  // ── 提醒管理函数 ──
+  const addReminder = async () => {
+    if (!reminderTitle.trim() || !reminderTime) return
+    const r = await createReminder({
+      title: reminderTitle.trim(),
+      remind_time: reminderTime,
+      repeat_days: reminderDays,
+    })
+    if (r) {
+      setReminders(prev => [...prev, r].sort((a, b) => a.remind_time.localeCompare(b.remind_time)))
+      setReminderTitle('')
+      setReminderTime('09:00')
+      showToast('✅ 提醒已添加')
+    } else {
+      showToast('❌ 添加失败', 3000)
+    }
+  }
+
+  const toggleReminder = async (r: TaskReminder) => {
+    await updateReminderApi(r.id, { enabled: !r.enabled })
+    setReminders(prev => prev.map(x => x.id === r.id ? { ...x, enabled: !x.enabled } : x))
+  }
+
+  const removeReminder = async (id: string) => {
+    await deleteReminderApi(id)
+    setReminders(prev => prev.filter(x => x.id !== id))
+    showToast('已删除')
+  }
 
   const showToast = (msg: string, duration = 2000) => {
     setToast(msg)
@@ -238,6 +352,173 @@ export default function Agent() {
     return isToday ? time : `${d.getMonth() + 1}/${d.getDate()} ${time}`
   }
 
+  // ── 定时提醒管理面板 ──
+  if (showReminders) {
+    const DAY_LABELS = ['日', '一', '二', '三', '四', '五', '六']
+    return (
+      <div className="h-full flex flex-col overflow-hidden fade-in">
+        <div className="p-4 border-b border-[var(--color-border)] bg-white shrink-0">
+          <div className="flex items-center gap-3">
+            <button onClick={() => setShowReminders(false)} className="text-sm text-[var(--color-k3)] font-medium">← 返回</button>
+            <h2 className="text-base font-bold text-[var(--color-k)]">⏰ 定时提醒</h2>
+            <span className="flex-1" />
+            <span className="text-[11px] text-[var(--color-k3)]">{reminders.filter(r => r.enabled).length} 个启用</span>
+          </div>
+        </div>
+        <div className="flex-1 overflow-y-auto p-4">
+          {/* 提醒列表 */}
+          {reminders.length === 0 ? (
+            <div className="text-center py-12 text-[var(--color-k3)]">
+              <div className="text-4xl mb-3 opacity-30">⏰</div>
+              <div className="text-sm">暂无定时提醒</div>
+              <div className="text-[11px] mt-1">在下方添加你的第一个任务提醒</div>
+            </div>
+          ) : (
+            <div className="flex flex-col gap-3">
+              {reminders.map(r => (
+                <div key={r.id} className={`bg-white rounded-2xl p-4 border border-[var(--color-border)] transition-opacity ${r.enabled ? '' : 'opacity-50'}`}>
+                  <div className="flex items-center gap-3">
+                    <div className="flex-1 min-w-0">
+                      <div className="text-sm font-bold text-[var(--color-k)] truncate">{r.title}</div>
+                      <div className="text-2xl font-light text-[var(--color-k)] mt-1 tracking-wider">{r.remind_time}</div>
+                      <div className="flex gap-1 mt-2">
+                        {DAY_LABELS.map((d, i) => (
+                          <span
+                            key={i}
+                            className={`w-6 h-6 rounded-full text-[10px] flex items-center justify-center font-medium ${
+                              r.repeat_days.includes(i)
+                                ? 'bg-[var(--color-pri)] text-white'
+                                : 'bg-[var(--color-bg)] text-[var(--color-k3)]'
+                            }`}
+                          >
+                            {d}
+                          </span>
+                        ))}
+                      </div>
+                    </div>
+                    <div className="flex flex-col items-center gap-2 shrink-0">
+                      {/* 开关 */}
+                      <button
+                        onClick={() => toggleReminder(r)}
+                        className={`w-11 h-6 rounded-full relative transition-colors ${r.enabled ? 'bg-[var(--color-pri)]' : 'bg-gray-300'}`}
+                      >
+                        <span className={`absolute top-0.5 w-5 h-5 bg-white rounded-full shadow transition-transform ${r.enabled ? 'left-[22px]' : 'left-0.5'}`} />
+                      </button>
+                      <button
+                        onClick={() => removeReminder(r.id)}
+                        className="text-[10px] text-red-400 active:text-red-600"
+                      >
+                        删除
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+
+          {/* 添加新提醒 */}
+          <div className="mt-4 bg-white rounded-2xl p-4 border-2 border-dashed border-[var(--color-border)]">
+            <div className="text-sm font-bold text-[var(--color-k)] mb-3">+ 添加新提醒</div>
+
+            {/* 标题 */}
+            <input
+              type="text"
+              value={reminderTitle}
+              onChange={e => setReminderTitle(e.target.value)}
+              placeholder="提醒内容，如：站会、午休、写周报…"
+              className="w-full text-sm px-3 py-2.5 rounded-xl border border-[var(--color-border)] bg-[var(--color-bg)] outline-none focus:border-[var(--color-pri)] mb-3 placeholder:text-[var(--color-k3)]"
+            />
+
+            {/* 时间 */}
+            <div className="flex items-center gap-3 mb-3">
+              <span className="text-sm text-[var(--color-k2)] shrink-0">时间</span>
+              <input
+                type="time"
+                value={reminderTime}
+                onChange={e => setReminderTime(e.target.value)}
+                className="flex-1 text-lg px-3 py-2 rounded-xl border border-[var(--color-border)] bg-[var(--color-bg)] outline-none focus:border-[var(--color-pri)]"
+              />
+            </div>
+
+            {/* 重复日 */}
+            <div className="mb-4">
+              <span className="text-sm text-[var(--color-k2)] mb-2 block">重复</span>
+              <div className="flex gap-2">
+                {DAY_LABELS.map((d, i) => (
+                  <button
+                    key={i}
+                    onClick={() => {
+                      setReminderDays(prev =>
+                        prev.includes(i) ? prev.filter(x => x !== i) : [...prev, i].sort()
+                      )
+                    }}
+                    className={`w-9 h-9 rounded-full text-xs flex items-center justify-center font-medium transition-colors ${
+                      reminderDays.includes(i)
+                        ? 'bg-[var(--color-pri)] text-white'
+                        : 'bg-[var(--color-bg)] text-[var(--color-k3)] border border-[var(--color-border)]'
+                    }`}
+                  >
+                    {d}
+                  </button>
+                ))}
+              </div>
+              <div className="flex gap-2 mt-2">
+                <button
+                  onClick={() => setReminderDays([1, 2, 3, 4, 5])}
+                  className="text-[10px] text-[var(--color-pri)] bg-[var(--color-pri-light)] px-2 py-1 rounded-full"
+                >
+                  工作日
+                </button>
+                <button
+                  onClick={() => setReminderDays([0, 1, 2, 3, 4, 5, 6])}
+                  className="text-[10px] text-[var(--color-pri)] bg-[var(--color-pri-light)] px-2 py-1 rounded-full"
+                >
+                  每天
+                </button>
+                <button
+                  onClick={() => setReminderDays([0, 6])}
+                  className="text-[10px] text-[var(--color-pri)] bg-[var(--color-pri-light)] px-2 py-1 rounded-full"
+                >
+                  周末
+                </button>
+              </div>
+            </div>
+
+            {/* 添加按钮 */}
+            <button
+              onClick={addReminder}
+              disabled={!reminderTitle.trim()}
+              className="w-full py-3 rounded-xl bg-[var(--color-pri)] text-white text-sm font-bold disabled:opacity-40 active:scale-[0.98] transition-transform"
+            >
+              添加提醒
+            </button>
+          </div>
+
+          {/* 通知权限提示 */}
+          {'Notification' in window && Notification.permission === 'default' && (
+            <div className="mt-3 bg-amber-50 rounded-xl p-3 border border-amber-200">
+              <div className="text-[12px] text-amber-700 font-medium">⚠ 需要通知权限</div>
+              <div className="text-[11px] text-amber-600 mt-1">请允许浏览器通知，否则提醒时无法弹出横幅。</div>
+              <button
+                onClick={() => Notification.requestPermission()}
+                className="mt-2 text-[11px] text-white bg-amber-500 px-3 py-1.5 rounded-lg font-medium"
+              >
+                授权通知
+              </button>
+            </div>
+          )}
+          {'Notification' in window && Notification.permission === 'denied' && (
+            <div className="mt-3 bg-red-50 rounded-xl p-3 border border-red-200">
+              <div className="text-[12px] text-red-700 font-medium">❌ 通知已被阻止</div>
+              <div className="text-[11px] text-red-600 mt-1">请在浏览器设置中允许本网站发送通知，才能收到提醒横幅。</div>
+            </div>
+          )}
+        </div>
+      </div>
+    )
+  }
+
   // ── 历史记录面板 ──
   if (showHistory) {
     return (
@@ -298,6 +579,18 @@ export default function Agent() {
             {notifications.length > 0 && (
               <span className="absolute -top-1.5 -right-1.5 w-4 h-4 bg-red-500 text-white text-[9px] rounded-full flex items-center justify-center font-bold">
                 {notifications.length > 9 ? '9+' : notifications.length}
+              </span>
+            )}
+          </button>
+          {/* 定时提醒 */}
+          <button
+            onClick={() => { setShowReminders(true); fetchReminders().then(r => { setReminders(r); remindersRef.current = r }).catch(() => {}) }}
+            className={`relative text-xs px-3 py-1.5 rounded-lg border border-[var(--color-border)] text-[var(--color-k3)] bg-white`}
+          >
+            ⏰
+            {reminders.filter(r => r.enabled).length > 0 && (
+              <span className="absolute -top-1.5 -right-1.5 w-4 h-4 bg-[var(--color-pri)] text-white text-[9px] rounded-full flex items-center justify-center font-bold">
+                {reminders.filter(r => r.enabled).length}
               </span>
             )}
           </button>
