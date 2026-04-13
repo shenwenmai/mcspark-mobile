@@ -89,14 +89,16 @@ export class GeminiLiveSession {
     this.ws = new WebSocket(`${WS_BASE}?key=${this.apiKey}`)
 
     this.ws.onopen = () => {
-      console.log(`[GeminiLive] WS已连接，发送config: ${model}`)
+      console.log(`[GeminiLive] WS已连接，发送setup: ${model}`)
       this.ws!.send(JSON.stringify({
-        config: {
+        setup: {
           model,
-          responseModalities: ['AUDIO'],
-          speechConfig: {
-            voiceConfig: {
-              prebuiltVoiceConfig: { voiceName: this.voiceName }
+          generationConfig: {
+            responseModalities: ['AUDIO'],
+            speechConfig: {
+              voiceConfig: {
+                prebuiltVoiceConfig: { voiceName: this.voiceName }
+              }
             }
           },
           systemInstruction: {

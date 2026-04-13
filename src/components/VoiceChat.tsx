@@ -10,9 +10,27 @@ export default function VoiceChat({ onClose }: Props) {
   const [duration, setDuration] = useState(0)
   const [audioLevel, setAudioLevel] = useState(0)
   const [error, setError] = useState('')
+  const [debugLogs, setDebugLogs] = useState<string[]>([])
   const sessionRef = useRef<GeminiLiveSession | null>(null)
   const timerRef = useRef<number>(0)
   const levelRef = useRef(0)
+
+  // 拦截 console.log/warn/error 中的 GeminiLive 日志显示在界面上
+  useEffect(() => {
+    const origLog = console.log
+    const origWarn = console.warn
+    const origErr = console.error
+    const addLog = (prefix: string, args: unknown[]) => {
+      const msg = args.map(a => typeof a === 'string' ? a : JSON.stringify(a)?.substring(0, 200)).join(' ')
+      if (msg.includes('GeminiLive') || msg.includes('gemini')) {
+        setDebugLogs(prev => [...prev.slice(-8), `${prefix} ${msg.substring(0, 150)}`])
+      }
+    }
+    console.log = (...args: unknown[]) => { origLog(...args); addLog('📝', args) }
+    console.warn = (...args: unknown[]) => { origWarn(...args); addLog('⚠️', args) }
+    console.error = (...args: unknown[]) => { origErr(...args); addLog('❌', args) }
+    return () => { console.log = origLog; console.warn = origWarn; console.error = origErr }
+  }, [])
 
   // 平滑音量（用于动画）
   useEffect(() => {
@@ -174,6 +192,15 @@ export default function VoiceChat({ onClose }: Props) {
           </button>
         )}
       </div>
+
+      {/* 调试日志（手机可见） */}
+      {debugLogs.length > 0 && (
+        <div className="absolute bottom-32 left-3 right-3 bg-black/70 rounded-xl p-2 max-h-[150px] overflow-y-auto">
+          {debugLogs.map((log, i) => (
+            <div key={i} className="text-[10px] text-green-400 font-mono leading-tight py-0.5 break-all">{log}</div>
+          ))}
+        </div>
+      )}
 
       {/* 底部 */}
       <div className="flex flex-col items-center gap-3 pb-safe mb-8">
