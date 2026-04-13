@@ -117,6 +117,45 @@ export async function deleteAgentTask(taskId: string): Promise<void> {
   if (error) console.warn('[Agent] deleteTask error:', error.message)
 }
 
+// ── 通知 ──
+export interface AgentNotification {
+  id: string
+  task_id: string | null
+  type: string
+  title: string
+  content: string
+  read: boolean
+  created_at: string
+}
+
+export async function fetchNotifications(unreadOnly = true): Promise<AgentNotification[]> {
+  const sb = getSupabase()
+  if (!sb) return []
+
+  try {
+    let query = sb.from('agent_notifications').select('*').order('created_at', { ascending: false }).limit(20)
+    if (unreadOnly) query = query.eq('read', false)
+    const { data, error } = await query
+    if (error) { console.warn('[Agent] fetchNotifications error:', error.message); return [] }
+    return data || []
+  } catch (e) {
+    console.warn('[Agent] fetchNotifications exception:', (e as Error).message)
+    return []
+  }
+}
+
+export async function markNotificationRead(id: string): Promise<void> {
+  const sb = getSupabase()
+  if (!sb) return
+  await sb.from('agent_notifications').update({ read: true }).eq('id', id)
+}
+
+export async function markAllNotificationsRead(): Promise<void> {
+  const sb = getSupabase()
+  if (!sb) return
+  await sb.from('agent_notifications').update({ read: true }).eq('read', false)
+}
+
 // ── 预设快捷指令 ──
 export const QUICK_COMMANDS = [
   { label: '📊 今日摘要', instruction: '生成今日知识库摘要，列出最新添加的内容和关键洞察', task_type: 'digest' as const },

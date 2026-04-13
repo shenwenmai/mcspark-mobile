@@ -1,6 +1,6 @@
 import { useState, useRef, useEffect, useCallback } from 'react'
 import ReactMarkdown from 'react-markdown'
-import { executeAgent, fetchAgentTasks, QUICK_COMMANDS, type AgentTask, type AgentResponse } from '../lib/agent'
+import { executeAgent, fetchAgentTasks, fetchNotifications, markNotificationRead, markAllNotificationsRead, QUICK_COMMANDS, type AgentTask, type AgentResponse, type AgentNotification } from '../lib/agent'
 import { captureItem } from '../lib/db'
 
 interface ChatMessage {
@@ -44,6 +44,8 @@ export default function Agent() {
   const [history, setHistory] = useState<AgentTask[]>([])
   const [historyLoading, setHistoryLoading] = useState(false)
   const [toast, setToast] = useState('')
+  const [notifications, setNotifications] = useState<AgentNotification[]>([])
+  const [showNotifications, setShowNotifications] = useState(false)
 
   // ── TTS 状态 ──
   const [ttsState, setTtsState] = useState<TtsState>('idle')
@@ -74,6 +76,11 @@ export default function Agent() {
       scrollRef.current.scrollTop = scrollRef.current.scrollHeight
     }
   }, [messages, loading])
+
+  // 加载未读通知
+  useEffect(() => {
+    fetchNotifications(true).then(setNotifications).catch(() => {})
+  }, [])
 
   const showToast = (msg: string, duration = 2000) => {
     setToast(msg)
@@ -282,6 +289,18 @@ export default function Agent() {
       <div className="p-4 pb-2 shrink-0">
         <div className="flex items-center gap-3 mb-1">
           <h1 className="text-xl font-bold text-[var(--color-k)] flex-1">🤖 AI Agent</h1>
+          {/* 通知铃铛 */}
+          <button
+            onClick={() => setShowNotifications(!showNotifications)}
+            className={`relative text-xs px-3 py-1.5 rounded-lg border border-[var(--color-border)] ${showNotifications ? 'bg-[var(--color-pri)] text-white' : 'text-[var(--color-k3)] bg-white'}`}
+          >
+            🔔
+            {notifications.length > 0 && (
+              <span className="absolute -top-1.5 -right-1.5 w-4 h-4 bg-red-500 text-white text-[9px] rounded-full flex items-center justify-center font-bold">
+                {notifications.length > 9 ? '9+' : notifications.length}
+              </span>
+            )}
+          </button>
           <button onClick={() => setShowTtsSettings(!showTtsSettings)} className={`text-xs px-3 py-1.5 rounded-lg border border-[var(--color-border)] ${showTtsSettings ? 'bg-[var(--color-pri)] text-white' : 'text-[var(--color-k3)] bg-white'}`}>
             🔊
           </button>
@@ -355,7 +374,56 @@ export default function Agent() {
           </div>
         )}
 
-        {!showTtsSettings && <p className="text-[13px] text-[var(--color-k2)]">基于知识库的智能问答 · 分析 · 整理</p>}
+        {/* 通知面板 */}
+        {showNotifications && (
+          <div className="mt-2 bg-white rounded-xl border border-[var(--color-border)] p-3 fade-in">
+            <div className="flex items-center mb-2">
+              <div className="text-xs font-bold text-[var(--color-k)] flex-1">通知 ({notifications.length})</div>
+              {notifications.length > 0 && (
+                <button
+                  onClick={async () => {
+                    await markAllNotificationsRead()
+                    setNotifications([])
+                    showToast('已全部标为已读')
+                  }}
+                  className="text-[10px] text-[var(--color-pri)]"
+                >
+                  全部已读
+                </button>
+              )}
+            </div>
+            {notifications.length === 0 ? (
+              <div className="text-[11px] text-[var(--color-k3)] py-3 text-center">暂无未读通知</div>
+            ) : (
+              <div className="flex flex-col gap-2 max-h-[250px] overflow-y-auto">
+                {notifications.map(n => (
+                  <div
+                    key={n.id}
+                    onClick={async () => {
+                      // 点击通知 → 插入到对话中显示
+                      const agentMsg: ChatMessage = {
+                        role: 'agent',
+                        text: `${n.title}\n\n${n.content}`,
+                        timestamp: new Date(n.created_at).getTime(),
+                      }
+                      setMessages(prev => [...prev, agentMsg])
+                      await markNotificationRead(n.id)
+                      setNotifications(prev => prev.filter(x => x.id !== n.id))
+                      setShowNotifications(false)
+                    }}
+                    className="text-left bg-[var(--color-bg)] rounded-lg p-2.5 cursor-pointer active:scale-[0.98] transition-transform"
+                  >
+                    <div className="text-[12px] font-medium text-[var(--color-k)]">{n.title}</div>
+                    <div className="text-[10px] text-[var(--color-k3)] mt-0.5 line-clamp-2">{n.content.substring(0, 80)}…</div>
+                    <div className="text-[9px] text-[var(--color-k3)] mt-1">{fmtTime(n.created_at)}</div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        )}
+
+        {!showTtsSettings && !showNotifications && <p className="text-[13px] text-[var(--color-k2)]">基于知识库的智能问答 · 分析 · 整理</p>}
       </div>
 
       {/* Chat Area */}
