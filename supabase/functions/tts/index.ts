@@ -1,6 +1,6 @@
 /**
- * Edge TTS 代理 — 调用微软 Edge 免费 TTS 接口
- * 返回 MP3 音频流
+ * TTS 代理 — 调用 Google Translate TTS（免费）
+ * 分段合成并拼接，返回 MP3 音频
  */
 
 const corsHeaders = {
@@ -9,142 +9,56 @@ const corsHeaders = {
   'Access-Control-Allow-Methods': 'POST, OPTIONS',
 }
 
-// Edge TTS WebSocket 地址
-const WS_URL = 'wss://speech.platform.bing.com/consumer/speech/synthesize/readaloud/edge/v1'
-const TRUSTED_CLIENT_TOKEN = '6A5AA1D4EAFF4E9FB37E23D68491D6F4'
+const TTS_BASE = 'https://translate.google.com/translate_tts'
 
-// 可选语音
-const VOICES: Record<string, string> = {
-  xiaoxiao: 'zh-CN-XiaoxiaoNeural',    // 女声（默认，活泼自然）
-  xiaoyi: 'zh-CN-XiaoyiNeural',        // 女声（温柔）
-  yunjian: 'zh-CN-YunjianNeural',      // 男声（沉稳）
-  yunxi: 'zh-CN-YunxiNeural',          // 男声（年轻）
-  yunyang: 'zh-CN-YunyangNeural',      // 男声（新闻播报）
-}
-
-function generateRequestId(): string {
-  return crypto.randomUUID().replace(/-/g, '')
-}
-
-function buildSSML(text: string, voice: string, rate: string, pitch: string): string {
-  // 清理文本中的 XML 特殊字符
-  const escaped = text
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;')
-
-  return `<speak version="1.0" xmlns="http://www.w3.org/2001/10/synthesis" xml:lang="zh-CN">
-<voice name="${voice}">
-<prosody rate="${rate}" pitch="${pitch}">
-${escaped}
-</prosody>
-</voice>
-</speak>`
-}
-
-async function synthesize(text: string, voiceKey: string, rate = '+0%', pitch = '+0Hz'): Promise<Uint8Array> {
-  const voice = VOICES[voiceKey] || VOICES.xiaoxiao
-  const requestId = generateRequestId()
-
-  const wsUrl = `${WS_URL}?TrustedClientToken=${TRUSTED_CLIENT_TOKEN}&ConnectionId=${requestId}`
-
-  return new Promise((resolve, reject) => {
-    const audioChunks: Uint8Array[] = []
-    let resolved = false
-
-    const ws = new WebSocket(wsUrl)
-
-    const timeout = setTimeout(() => {
-      if (!resolved) {
-        resolved = true
-        ws.close()
-        reject(new Error('TTS 超时'))
-      }
-    }, 30000)
-
-    ws.onopen = () => {
-      // 发送配置
-      const configMsg = `Content-Type:application/json; charset=utf-8\r\nPath:speech.config\r\n\r\n{
-        "context": {
-          "synthesis": {
-            "audio": {
-              "metadataoptions": { "sentenceBoundaryEnabled": false, "wordBoundaryEnabled": false },
-              "outputFormat": "audio-24khz-48kbitrate-mono-mp3"
-            }
-          }
-        }
-      }`
-      ws.send(configMsg)
-
-      // 发送 SSML
-      const ssml = buildSSML(text, voice, rate, pitch)
-      const ssmlMsg = `X-RequestId:${requestId}\r\nContent-Type:application/ssml+xml\r\nPath:ssml\r\n\r\n${ssml}`
-      ws.send(ssmlMsg)
-    }
-
-    ws.onmessage = (event) => {
-      if (event.data instanceof ArrayBuffer) {
-        // 二进制音频数据 — 需要跳过头部
-        const view = new DataView(event.data)
-        // 头部格式：2 bytes (header length) + header text + audio data
-        const headerLen = view.getUint16(0)
-        const audioData = new Uint8Array(event.data, 2 + headerLen)
-        if (audioData.length > 0) {
-          audioChunks.push(audioData)
-        }
-      } else if (typeof event.data === 'string') {
-        // 文本消息
-        if (event.data.includes('Path:turn.end')) {
-          // 合成完成
-          clearTimeout(timeout)
-          resolved = true
-          ws.close()
-
-          // 合并所有音频块
-          const totalLen = audioChunks.reduce((sum, chunk) => sum + chunk.length, 0)
-          const result = new Uint8Array(totalLen)
-          let offset = 0
-          for (const chunk of audioChunks) {
-            result.set(chunk, offset)
-            offset += chunk.length
-          }
-          resolve(result)
-        }
-      }
-    }
-
-    ws.onerror = (e) => {
-      clearTimeout(timeout)
-      if (!resolved) {
-        resolved = true
-        reject(new Error('WebSocket 连接失败: ' + String(e)))
-      }
-    }
-
-    ws.onclose = () => {
-      clearTimeout(timeout)
-      if (!resolved) {
-        resolved = true
-        if (audioChunks.length > 0) {
-          const totalLen = audioChunks.reduce((sum, chunk) => sum + chunk.length, 0)
-          const result = new Uint8Array(totalLen)
-          let offset = 0
-          for (const chunk of audioChunks) {
-            result.set(chunk, offset)
-            offset += chunk.length
-          }
-          resolve(result)
-        } else {
-          reject(new Error('未收到音频数据'))
-        }
-      }
-    }
+async function synthesizeChunk(text: string): Promise<Uint8Array> {
+  const params = new URLSearchParams({
+    ie: 'UTF-8',
+    tl: 'zh-CN',
+    client: 'tw-ob',
+    q: text,
   })
+
+  const res = await fetch(`${TTS_BASE}?${params}`, {
+    headers: {
+      'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+      'Referer': 'https://translate.google.com/',
+    },
+  })
+
+  if (!res.ok) {
+    throw new Error(`TTS 请求失败: ${res.status}`)
+  }
+
+  return new Uint8Array(await res.arrayBuffer())
+}
+
+// Google TTS 每次最多约 200 字，需要分段
+function splitText(text: string, maxLen = 180): string[] {
+  const segments: string[] = []
+  let remaining = text
+
+  while (remaining.length > 0) {
+    if (remaining.length <= maxLen) {
+      segments.push(remaining)
+      break
+    }
+
+    let cut = -1
+    for (const sep of ['。', '！', '？', '；', '，', '、', '…', ' ']) {
+      const idx = remaining.lastIndexOf(sep, maxLen)
+      if (idx > 20) { cut = idx + 1; break }
+    }
+    if (cut <= 0) cut = maxLen
+
+    segments.push(remaining.substring(0, cut))
+    remaining = remaining.substring(cut)
+  }
+
+  return segments.filter(s => s.trim().length > 0)
 }
 
 Deno.serve(async (req) => {
-  // CORS
   if (req.method === 'OPTIONS') {
     return new Response(null, { headers: corsHeaders })
   }
@@ -154,7 +68,7 @@ Deno.serve(async (req) => {
   }
 
   try {
-    const { text, voice, rate, pitch } = await req.json()
+    const { text } = await req.json()
 
     if (!text || typeof text !== 'string') {
       return new Response(JSON.stringify({ error: '缺少 text 参数' }), {
@@ -163,16 +77,30 @@ Deno.serve(async (req) => {
       })
     }
 
-    // 限制文本长度（安全限制）
-    const trimmed = text.substring(0, 5000)
+    const trimmed = text.substring(0, 3000)
+    const segments = splitText(trimmed)
+    const audioChunks: Uint8Array[] = []
 
-    const audio = await synthesize(trimmed, voice || 'xiaoxiao', rate, pitch)
+    for (const seg of segments) {
+      const chunk = await synthesizeChunk(seg)
+      audioChunks.push(chunk)
+    }
 
-    return new Response(audio, {
+    // 合并音频
+    const totalLen = audioChunks.reduce((sum, c) => sum + c.length, 0)
+    const result = new Uint8Array(totalLen)
+    let offset = 0
+    for (const chunk of audioChunks) {
+      result.set(chunk, offset)
+      offset += chunk.length
+    }
+
+    return new Response(result, {
       headers: {
         ...corsHeaders,
         'Content-Type': 'audio/mpeg',
-        'Content-Length': String(audio.length),
+        'Content-Length': String(result.length),
+        'Cache-Control': 'public, max-age=3600',
       },
     })
   } catch (e) {
