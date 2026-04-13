@@ -4,11 +4,13 @@ import Login from './pages/Login'
 import Capture from './pages/Capture'
 import Tasks from './pages/Tasks'
 import Browse from './pages/Browse'
+import AgentPage from './pages/Agent'
 
-type Tab = 'capture' | 'tasks' | 'browse' | 'settings'
+type Tab = 'capture' | 'agent' | 'tasks' | 'browse' | 'settings'
 
 const tabs: { id: Tab; label: string; icon: string }[] = [
   { id: 'capture', label: '录入', icon: '📥' },
+  { id: 'agent', label: 'Agent', icon: '🤖' },
   { id: 'tasks', label: '任务', icon: '📋' },
   { id: 'browse', label: '知识库', icon: '🔍' },
   { id: 'settings', label: '设置', icon: '⚙️' },
@@ -119,6 +121,7 @@ export default function App() {
       {/* Content */}
       <div className="flex-1 min-h-0 overflow-hidden">
         {tab === 'capture' && <Capture onSaved={() => setRefreshKey(k => k + 1)} />}
+        {tab === 'agent' && <AgentPage />}
         {tab === 'tasks' && <Tasks key={refreshKey} />}
         {tab === 'browse' && <Browse key={refreshKey} />}
         {tab === 'settings' && <Settings onReconfigure={() => {
