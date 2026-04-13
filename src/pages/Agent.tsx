@@ -682,17 +682,20 @@ export default function Agent() {
 
       {/* 语音对话全屏覆盖 */}
       {showVoiceChat && (
-        <VoiceChat onClose={(transcript) => {
+        <VoiceChat
+          chatHistory={messages.slice(-10).map(m => ({ role: m.role, text: m.text }))}
+          onClose={(transcript) => {
           setShowVoiceChat(false)
-          // 把语音对话记录保存到聊天历史
+          // 把语音对话的每条消息都加入聊天历史（保持完整上下文）
           if (transcript && transcript.length > 0) {
-            const voiceMsg: ChatMessage = {
-              role: 'agent',
-              text: `🎤 **语音对话记录** (${transcript.length} 条回复)\n\n` +
-                transcript.map(t => t.text).join('\n\n'),
+            const voiceMessages: ChatMessage[] = transcript.map(t => ({
+              role: t.role,
+              text: t.role === 'user' ? `🎤 ${t.text}` : t.text,
+              stats: t.stats,
+              relatedItems: t.relatedItems,
               timestamp: Date.now(),
-            }
-            setMessages(prev => [...prev, voiceMsg])
+            }))
+            setMessages(prev => [...prev, ...voiceMessages])
             showToast(`语音对话已保存 (${transcript.length} 条)`)
           }
         }} />
