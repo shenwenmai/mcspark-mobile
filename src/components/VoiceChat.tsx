@@ -22,8 +22,8 @@ export default function VoiceChat({ onClose, chatHistory }: Props) {
   const [state, setState] = useState<VoiceState>('listening')
   const [duration, setDuration] = useState(0)
   const [error, setError] = useState('')
-  const [interimText, setInterimText] = useState('') // 正在说的（临时）
-  const [currentReply, setCurrentReply] = useState('') // AI 当前回复
+  const [interimText, setInterimText] = useState('')
+  const [currentReply, setCurrentReply] = useState('')
   const [transcript, setTranscript] = useState<TranscriptEntry[]>([])
   const [showTranscript, setShowTranscript] = useState(true)
 
@@ -34,6 +34,7 @@ export default function VoiceChat({ onClose, chatHistory }: Props) {
   const isProcessingRef = useRef(false)
   const shouldRestartRef = useRef(true)
   const silenceTimerRef = useRef<number>(0)
+  const ttsUnlockedRef = useRef(false)
 
   // 自动滚动
   useEffect(() => {
@@ -41,6 +42,18 @@ export default function VoiceChat({ onClose, chatHistory }: Props) {
       transcriptScrollRef.current.scrollTop = transcriptScrollRef.current.scrollHeight
     }
   }, [transcript, currentReply, interimText])
+
+  // ── 解锁 TTS（手机浏览器必须在用户手势中播放一次才能后续使用） ──
+  const unlockTTS = useCallback(() => {
+    if (ttsUnlockedRef.current) return
+    if (!('speechSynthesis' in window)) return
+    const utt = new SpeechSynthesisUtterance('')
+    utt.volume = 0
+    utt.rate = 10
+    speechSynthesis.speak(utt)
+    ttsUnlockedRef.current = true
+    console.log('[VoiceChat] TTS 已解锁')
+  }, [])
 
   // 停止语音播报
   const stopSpeaking = useCallback(() => {
@@ -70,19 +83,19 @@ export default function VoiceChat({ onClose, chatHistory }: Props) {
 
       if (!clean) { resolve(); return }
 
-      // 分段播报（每段不超过 200 字，避免 TTS 截断）
+      // 分段播报（每段不超过 150 字，手机 TTS 对长文本容易出问题）
       const segments: string[] = []
       let remaining = clean
       while (remaining.length > 0) {
-        if (remaining.length <= 200) {
+        if (remaining.length <= 150) {
           segments.push(remaining)
           break
         }
-        // 找合适的断句点
-        let cut = remaining.lastIndexOf('。', 200)
-        if (cut < 50) cut = remaining.lastIndexOf('，', 200)
-        if (cut < 50) cut = remaining.lastIndexOf('、', 200)
-        if (cut < 50) cut = 200
+        let cut = remaining.lastIndexOf('。', 150)
+        if (cut < 30) cut = remaining.lastIndexOf('，', 150)
+        if (cut < 30) cut = remaining.lastIndexOf('、', 150)
+        if (cut < 30) cut = remaining.lastIndexOf('；', 150)
+        if (cut < 30) cut = 150
         segments.push(remaining.substring(0, cut + 1))
         remaining = remaining.substring(cut + 1)
       }
@@ -95,20 +108,28 @@ export default function VoiceChat({ onClose, chatHistory }: Props) {
         }
         const utt = new SpeechSynthesisUtterance(segments[idx])
         utt.lang = 'zh-CN'
-        utt.rate = 1.1
+        utt.rate = 1.05
         utt.pitch = 1.0
+        utt.volume = 1.0
 
-        // 尝试选择中文语音
+        // 选择中文语音
         const voices = speechSynthesis.getVoices()
         const zhVoice = voices.find(v => v.lang.startsWith('zh') && v.localService)
           || voices.find(v => v.lang.startsWith('zh'))
         if (zhVoice) utt.voice = zhVoice
 
         utt.onend = () => { idx++; speakNext() }
-        utt.onerror = () => { idx++; speakNext() }
+        utt.onerror = (e) => {
+          console.warn('[VoiceChat] TTS 播报错误:', e)
+          idx++
+          speakNext()
+        }
         speechSynthesis.speak(utt)
       }
-      speakNext()
+
+      // Chrome 有 bug：如果 speechSynthesis 处于暂停状态，新的 speak 会挂起
+      speechSynthesis.cancel()
+      setTimeout(speakNext, 50)
     })
   }, [])
 
@@ -119,17 +140,15 @@ export default function VoiceChat({ onClose, chatHistory }: Props) {
     setState('processing')
     setCurrentReply('')
 
-    // 记录用户消息
     const userEntry: TranscriptEntry = { role: 'user', text: userText }
     transcriptRef.current = [...transcriptRef.current, userEntry]
     setTranscript([...transcriptRef.current])
 
     try {
-      // 构建历史上下文（包含之前的文字聊天 + 本次语音对话）
       const historyForAgent = [
         ...(chatHistory || []).slice(-6).map(m => ({ role: m.role, text: m.text.substring(0, 500) })),
         ...transcriptRef.current.slice(-8).map(m => ({ role: m.role, text: m.text.substring(0, 500) })),
-      ].slice(0, -1) // 不包含当前这条
+      ].slice(0, -1)
 
       const res = await executeAgent({
         instruction: userText,
@@ -140,7 +159,6 @@ export default function VoiceChat({ onClose, chatHistory }: Props) {
 
       const replyText = res.result || res.error || '没有回答'
 
-      // 记录 AI 回复
       const agentEntry: TranscriptEntry = {
         role: 'agent',
         text: replyText,
@@ -167,7 +185,6 @@ export default function VoiceChat({ onClose, chatHistory }: Props) {
     setCurrentReply('')
     setInterimText('')
 
-    // 回到监听
     if (shouldRestartRef.current) {
       setState('listening')
       startRecognition()
@@ -176,19 +193,18 @@ export default function VoiceChat({ onClose, chatHistory }: Props) {
 
   // 启动语音识别
   const startRecognition = useCallback(() => {
-    const SpeechRecognition = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition
-    if (!SpeechRecognition) {
+    const SR = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition
+    if (!SR) {
       setError('你的浏览器不支持语音识别，请使用 Chrome')
       setState('error')
       return
     }
 
-    // 清理旧实例
     if (recognitionRef.current) {
       try { recognitionRef.current.abort() } catch { /* ignore */ }
     }
 
-    const recognition = new SpeechRecognition()
+    const recognition = new SR()
     recognition.continuous = true
     recognition.interimResults = true
     recognition.lang = 'zh-CN'
@@ -208,17 +224,13 @@ export default function VoiceChat({ onClose, chatHistory }: Props) {
 
       setInterimText(interim)
 
-      // 有最终结果 → 发送给 Agent
       if (final.trim()) {
-        // 清除静默计时器
         if (silenceTimerRef.current) {
           clearTimeout(silenceTimerRef.current)
           silenceTimerRef.current = 0
         }
-
-        // 停止识别，发送
         try { recognition.stop() } catch { /* ignore */ }
-        stopSpeaking() // 如果 AI 在说话，打断
+        stopSpeaking()
         sendToAgent(final.trim())
       }
     }
@@ -229,25 +241,18 @@ export default function VoiceChat({ onClose, chatHistory }: Props) {
         setError('麦克风权限被拒绝，请在浏览器设置中允许')
         setState('error')
       } else if (ev.error === 'no-speech') {
-        // 没说话，重新开始
         if (shouldRestartRef.current && !isProcessingRef.current) {
           setTimeout(() => {
-            if (shouldRestartRef.current && !isProcessingRef.current) {
-              startRecognition()
-            }
+            if (shouldRestartRef.current && !isProcessingRef.current) startRecognition()
           }, 300)
         }
       }
-      // aborted 和 network 不需要特别处理
     }
 
     recognition.onend = () => {
-      // 如果没在处理中且应该继续，重启识别
       if (shouldRestartRef.current && !isProcessingRef.current) {
         setTimeout(() => {
-          if (shouldRestartRef.current && !isProcessingRef.current) {
-            startRecognition()
-          }
+          if (shouldRestartRef.current && !isProcessingRef.current) startRecognition()
         }, 300)
       }
     }
@@ -258,20 +263,16 @@ export default function VoiceChat({ onClose, chatHistory }: Props) {
       recognition.start()
     } catch (e) {
       console.warn('[VoiceChat] 启动识别失败:', e)
-      // 可能是上一个实例还没完全停止，稍后重试
       setTimeout(() => {
-        if (shouldRestartRef.current && !isProcessingRef.current) {
-          startRecognition()
-        }
+        if (shouldRestartRef.current && !isProcessingRef.current) startRecognition()
       }, 500)
     }
   }, [sendToAgent, stopSpeaking])
 
   // 初始化
   useEffect(() => {
-    // 检查浏览器支持
-    const SpeechRecognition = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition
-    if (!SpeechRecognition) {
+    const SR = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition
+    if (!SR) {
       setError('你的浏览器不支持语音识别，请使用 Chrome')
       setState('error')
       return
@@ -283,10 +284,12 @@ export default function VoiceChat({ onClose, chatHistory }: Props) {
       speechSynthesis.onvoiceschanged = () => speechSynthesis.getVoices()
     }
 
+    // 解锁 TTS（在 useEffect 里调用，因为组件挂载是用户点击触发的）
+    unlockTTS()
+
     shouldRestartRef.current = true
     startRecognition()
 
-    // 计时器
     timerRef.current = window.setInterval(() => {
       setDuration(d => d + 1)
     }, 1000)
@@ -339,11 +342,11 @@ export default function VoiceChat({ onClose, chatHistory }: Props) {
   const hasText = transcript.length > 0 || interimText || currentReply
 
   return (
-    <div className="fixed inset-0 z-50 flex flex-col items-center justify-between"
+    <div className="fixed inset-0 z-50 flex flex-col"
       style={{ background: 'linear-gradient(180deg, #0f172a 0%, #000 100%)' }}>
 
-      {/* 顶部 */}
-      <div className="w-full flex justify-between items-center px-5 pt-safe mt-3">
+      {/* 顶部栏 */}
+      <div className="shrink-0 flex justify-between items-center px-5 pt-safe mt-3">
         <span className="text-white/30 text-xs">AI 语音助手 · Agent</span>
         <div className="flex items-center gap-3">
           {hasText && (
@@ -358,10 +361,10 @@ export default function VoiceChat({ onClose, chatHistory }: Props) {
         </div>
       </div>
 
-      {/* 中心 */}
-      <div className="flex flex-col items-center gap-5 -mt-4">
+      {/* 状态区 */}
+      <div className="shrink-0 flex flex-col items-center gap-4 pt-6 pb-4">
         {/* 脉动圆圈 */}
-        <div className="relative w-36 h-36 flex items-center justify-center">
+        <div className="relative w-28 h-28 flex items-center justify-center">
           <div
             className={`absolute inset-0 rounded-full transition-transform duration-300 ${state === 'processing' ? 'animate-pulse' : ''}`}
             style={{ background: ringColor, transform: `scale(${ringScale})`, boxShadow: ringGlow }}
@@ -369,13 +372,13 @@ export default function VoiceChat({ onClose, chatHistory }: Props) {
           <div
             className="absolute rounded-full"
             style={{
-              inset: '12px',
+              inset: '10px',
               background: ringColor.replace('0.35', '0.5'),
               transform: `scale(${state === 'processing' ? 0.95 : 1})`,
               transition: 'transform 200ms',
             }}
           />
-          <span className="text-4xl relative z-10 select-none">
+          <span className="text-3xl relative z-10 select-none">
             {state === 'listening' ? '🎤' :
              state === 'processing' ? '🧠' :
              state === 'speaking' ? '🔊' :
@@ -383,10 +386,7 @@ export default function VoiceChat({ onClose, chatHistory }: Props) {
           </span>
         </div>
 
-        {/* 标题 */}
-        <div className="text-white text-lg font-medium tracking-wide">AI 语音助手</div>
-
-        {/* 状态 */}
+        {/* 状态文字 */}
         <div className={`text-sm font-medium ${
           state === 'error' ? 'text-red-400' :
           state === 'speaking' ? 'text-green-400' :
@@ -400,20 +400,13 @@ export default function VoiceChat({ onClose, chatHistory }: Props) {
         {/* 正在说的临时文字 */}
         {interimText && state === 'listening' && (
           <div className="mx-6 px-4 py-2 bg-blue-500/20 rounded-xl max-w-[320px]">
-            <div className="text-blue-300 text-sm leading-relaxed">{interimText}</div>
-          </div>
-        )}
-
-        {/* AI 当前回复摘要 */}
-        {currentReply && (state === 'speaking' || state === 'processing') && (
-          <div className="mx-6 px-4 py-2 bg-white/10 rounded-xl max-w-[320px] max-h-[100px] overflow-hidden">
-            <div className="text-white/70 text-sm leading-relaxed line-clamp-4">{currentReply}</div>
+            <div className="text-blue-200 text-base leading-relaxed">{interimText}</div>
           </div>
         )}
 
         {/* 计时 */}
-        {state !== 'error' && !interimText && !currentReply && (
-          <div className="text-white/20 text-2xl font-extralight tracking-[0.2em] mt-1">
+        {state !== 'error' && !interimText && (
+          <div className="text-white/15 text-lg font-extralight tracking-[0.15em]">
             {fmtDur(duration)}
           </div>
         )}
@@ -422,47 +415,89 @@ export default function VoiceChat({ onClose, chatHistory }: Props) {
         {state === 'error' && (
           <button
             onClick={() => { setState('listening'); startRecognition() }}
-            className="mt-2 text-sm text-white/60 bg-white/10 px-5 py-2 rounded-full active:bg-white/20"
+            className="text-sm text-white/60 bg-white/10 px-5 py-2 rounded-full active:bg-white/20"
           >
             重试
           </button>
         )}
       </div>
 
-      {/* 对话记录面板 */}
-      {showTranscript && hasText && (
-        <div
-          ref={transcriptScrollRef}
-          className="absolute bottom-32 left-3 right-3 bg-black/80 backdrop-blur-sm rounded-xl p-3 max-h-[220px] overflow-y-auto"
-        >
-          <div className="text-[10px] text-white/30 mb-2 font-medium">对话记录（结束后自动保存）</div>
-          {transcript.map((entry, i) => (
-            <div key={i} className="mb-2">
-              <div className={`text-[10px] mb-0.5 ${entry.role === 'user' ? 'text-blue-400/70' : 'text-green-400/70'}`}>
-                {entry.role === 'user' ? '你' : 'AI'}
+      {/* 对话记录区（可滚动，占据剩余空间） */}
+      <div className="flex-1 min-h-0 mx-3 mb-2">
+        {showTranscript && hasText ? (
+          <div
+            ref={transcriptScrollRef}
+            className="h-full bg-black/60 backdrop-blur-sm rounded-2xl px-4 py-3 overflow-y-auto"
+          >
+            {transcript.map((entry, i) => (
+              <div key={i} className={`mb-4 ${entry.role === 'user' ? 'flex justify-end' : ''}`}>
+                {entry.role === 'user' ? (
+                  <div className="bg-blue-600/30 rounded-2xl rounded-br-md px-4 py-3 max-w-[85%]">
+                    <div className="text-blue-100 text-[15px] leading-relaxed">{entry.text}</div>
+                  </div>
+                ) : (
+                  <div className="bg-white/10 rounded-2xl rounded-bl-md px-4 py-3">
+                    <div className="text-white/90 text-[15px] leading-relaxed whitespace-pre-wrap">{entry.text}</div>
+                    {entry.stats && (
+                      <div className="text-[11px] text-white/25 mt-2">
+                        ⏱{(entry.stats.duration_ms / 1000).toFixed(1)}s · 📚检索{entry.stats.context_items}条 · 🔤{entry.stats.input_tokens + entry.stats.output_tokens} tokens
+                      </div>
+                    )}
+                    {entry.relatedItems && entry.relatedItems.length > 0 && (
+                      <div className="flex flex-wrap gap-1 mt-2">
+                        {entry.relatedItems.slice(0, 4).map(item => (
+                          <span key={item.id} className="text-[11px] bg-white/10 text-white/50 px-2 py-0.5 rounded-full truncate max-w-[140px]">
+                            {item.title}
+                          </span>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                )}
               </div>
-              <div className={`text-[13px] leading-relaxed ${entry.role === 'user' ? 'text-blue-200/80' : 'text-white/80'}`}>
-                {entry.text}
-              </div>
-              {entry.stats && (
-                <div className="text-[9px] text-white/20 mt-0.5">
-                  ⏱{(entry.stats.duration_ms / 1000).toFixed(1)}s · 📚{entry.stats.context_items}条
+            ))}
+
+            {/* AI 正在回复 */}
+            {currentReply && (
+              <div className="mb-4">
+                <div className="bg-green-500/15 rounded-2xl rounded-bl-md px-4 py-3 border border-green-500/20">
+                  <div className="text-white/80 text-[15px] leading-relaxed whitespace-pre-wrap">{currentReply}</div>
+                  {state === 'speaking' && (
+                    <div className="text-[11px] text-green-400/50 mt-1 flex items-center gap-1">
+                      <span className="inline-block w-1.5 h-1.5 bg-green-400 rounded-full animate-pulse" />
+                      正在播报…
+                    </div>
+                  )}
                 </div>
-              )}
+              </div>
+            )}
+
+            {/* 处理中 */}
+            {state === 'processing' && !currentReply && (
+              <div className="mb-4">
+                <div className="bg-purple-500/15 rounded-2xl rounded-bl-md px-4 py-3 border border-purple-500/20">
+                  <div className="flex items-center gap-2 text-purple-300/70 text-sm">
+                    <span className="inline-block w-2 h-2 bg-purple-400 rounded-full animate-pulse" />
+                    <span className="inline-block w-2 h-2 bg-purple-400 rounded-full animate-pulse" style={{ animationDelay: '0.2s' }} />
+                    <span className="inline-block w-2 h-2 bg-purple-400 rounded-full animate-pulse" style={{ animationDelay: '0.4s' }} />
+                    <span className="ml-1">正在检索知识库并思考…</span>
+                  </div>
+                </div>
+              </div>
+            )}
+          </div>
+        ) : (
+          <div className="h-full flex items-center justify-center">
+            <div className="text-white/15 text-sm text-center">
+              {state === 'listening' ? '开始说话吧，我在听…' : ''}
             </div>
-          ))}
-        </div>
-      )}
-
-      {/* 底部 */}
-      <div className="flex flex-col items-center gap-3 pb-safe mb-8">
-        {transcript.length > 0 && !showTranscript && (
-          <button onClick={() => setShowTranscript(true)} className="text-[11px] text-white/30 mb-1">
-            {transcript.length} 条对话 · 点击查看
-          </button>
+          </div>
         )}
+      </div>
 
-        {/* 打断按钮（AI 说话时） */}
+      {/* 底部控制 */}
+      <div className="shrink-0 flex items-center justify-center gap-6 pb-safe mb-6">
+        {/* 打断按钮 */}
         {state === 'speaking' && (
           <button
             onClick={() => {
@@ -470,12 +505,13 @@ export default function VoiceChat({ onClose, chatHistory }: Props) {
               setState('listening')
               startRecognition()
             }}
-            className="text-xs text-white/50 bg-white/10 px-4 py-1.5 rounded-full mb-2 active:bg-white/20"
+            className="w-12 h-12 rounded-full bg-white/10 flex items-center justify-center active:bg-white/20"
           >
-            打断 AI
+            <span className="text-white/60 text-lg">⏸</span>
           </button>
         )}
 
+        {/* 结束按钮 */}
         <button
           onClick={endCall}
           className="w-16 h-16 rounded-full bg-red-500 flex items-center justify-center active:scale-90 transition-transform"
@@ -485,7 +521,9 @@ export default function VoiceChat({ onClose, chatHistory }: Props) {
             <path d="M3 3L21 21M21 3L3 21" />
           </svg>
         </button>
-        <span className="text-white/30 text-xs">结束通话</span>
+
+        {/* 占位（保持居中） */}
+        {state === 'speaking' && <div className="w-12" />}
       </div>
     </div>
   )
