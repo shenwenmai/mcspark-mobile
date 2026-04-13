@@ -251,9 +251,12 @@ export default function App() {
         if (!r.enabled) { debugParts.push(`[${r.title}]禁用`); continue }
 
         // repeat_days 可能是字符串或数组，做兼容处理
-        const days: number[] = Array.isArray(r.repeat_days)
-          ? r.repeat_days
-          : (typeof r.repeat_days === 'string' ? JSON.parse(r.repeat_days) : [])
+        let days: number[] = []
+        try {
+          days = Array.isArray(r.repeat_days)
+            ? r.repeat_days
+            : (typeof r.repeat_days === 'string' ? JSON.parse(r.repeat_days) : [])
+        } catch { days = [] }
 
         if (!days.includes(currentDay)) {
           debugParts.push(`[${r.title}]${r.remind_time} 周${days.join(',')}不含今天`)
