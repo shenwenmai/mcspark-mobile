@@ -210,9 +210,9 @@ export default function Agent() {
           <div className="flex flex-col gap-3">
             {messages.map((msg, i) => (
               <div key={i} className={`flex ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}>
-                <div className={`max-w-[85%] rounded-2xl px-4 py-3 ${msg.role === 'user'
-                  ? 'bg-[var(--color-pri)] text-white rounded-br-md'
-                  : 'bg-white border border-[var(--color-border)] text-[var(--color-k)] rounded-bl-md'
+                <div className={`rounded-2xl px-4 py-3 ${msg.role === 'user'
+                  ? 'max-w-[85%] bg-[var(--color-pri)] text-white rounded-br-md'
+                  : 'w-full bg-white border border-[var(--color-border)] text-[var(--color-k)] rounded-bl-md'
                   }`}>
                   {/* 消息内容 */}
                   {msg.role === 'agent' ? (
