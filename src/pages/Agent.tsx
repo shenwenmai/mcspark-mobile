@@ -48,6 +48,16 @@ export default function Agent() {
   // ── TTS 状态 ──
   const [ttsState, setTtsState] = useState<TtsState>('idle')
   const [ttsIndex, setTtsIndex] = useState<number>(-1) // 正在朗读哪条消息
+  const [ttsVoices, setTtsVoices] = useState<SpeechSynthesisVoice[]>([])
+  const [ttsVoiceIdx, setTtsVoiceIdx] = useState<number>(() => {
+    const saved = localStorage.getItem('tts_voice_idx')
+    return saved ? parseInt(saved) : 0
+  })
+  const [ttsRate, setTtsRate] = useState<number>(() => {
+    const saved = localStorage.getItem('tts_rate')
+    return saved ? parseFloat(saved) : 1.0
+  })
+  const [showTtsSettings, setShowTtsSettings] = useState(false)
   const ttsUtterRef = useRef<SpeechSynthesisUtterance | null>(null)
 
   const scrollRef = useRef<HTMLDivElement>(null)
@@ -70,9 +80,31 @@ export default function Agent() {
     setTimeout(() => setToast(''), duration)
   }
 
+  // ── 加载可用中文语音 ──
+  useEffect(() => {
+    const loadVoices = () => {
+      const all = window.speechSynthesis.getVoices()
+      const zh = all.filter(v =>
+        v.lang.startsWith('zh') || v.lang.includes('CN') || v.lang.includes('TW') || v.lang.includes('HK')
+      )
+      if (zh.length > 0) {
+        setTtsVoices(zh)
+        // 恢复上次选择，如果索引越界则重置
+        const savedIdx = parseInt(localStorage.getItem('tts_voice_idx') || '0')
+        if (savedIdx >= zh.length) {
+          setTtsVoiceIdx(0)
+          localStorage.setItem('tts_voice_idx', '0')
+        }
+      }
+    }
+    loadVoices()
+    // Chrome 需要监听 voiceschanged 事件
+    window.speechSynthesis.onvoiceschanged = loadVoices
+    return () => { window.speechSynthesis.onvoiceschanged = null }
+  }, [])
+
   // ── TTS 语音朗读 ──
   const ttsPlay = useCallback((text: string, msgIndex: number) => {
-    // 先停掉之前的
     window.speechSynthesis.cancel()
 
     const clean = stripMarkdown(text)
@@ -80,13 +112,13 @@ export default function Agent() {
 
     const utter = new SpeechSynthesisUtterance(clean)
     utter.lang = 'zh-CN'
-    utter.rate = 1.0
+    utter.rate = ttsRate
     utter.pitch = 1.0
 
-    // 尝试选一个中文语音
-    const voices = window.speechSynthesis.getVoices()
-    const zhVoice = voices.find(v => v.lang.startsWith('zh')) || voices.find(v => v.lang.includes('CN'))
-    if (zhVoice) utter.voice = zhVoice
+    // 使用用户选择的语音
+    if (ttsVoices.length > 0 && ttsVoiceIdx < ttsVoices.length) {
+      utter.voice = ttsVoices[ttsVoiceIdx]
+    }
 
     utter.onend = () => { setTtsState('idle'); setTtsIndex(-1) }
     utter.onerror = () => { setTtsState('idle'); setTtsIndex(-1) }
@@ -95,7 +127,7 @@ export default function Agent() {
     setTtsState('playing')
     setTtsIndex(msgIndex)
     window.speechSynthesis.speak(utter)
-  }, [])
+  }, [ttsVoices, ttsVoiceIdx, ttsRate])
 
   const ttsPause = useCallback(() => {
     window.speechSynthesis.pause()
@@ -250,6 +282,9 @@ export default function Agent() {
       <div className="p-4 pb-2 shrink-0">
         <div className="flex items-center gap-3 mb-1">
           <h1 className="text-xl font-bold text-[var(--color-k)] flex-1">🤖 AI Agent</h1>
+          <button onClick={() => setShowTtsSettings(!showTtsSettings)} className={`text-xs px-3 py-1.5 rounded-lg border border-[var(--color-border)] ${showTtsSettings ? 'bg-[var(--color-pri)] text-white' : 'text-[var(--color-k3)] bg-white'}`}>
+            🔊
+          </button>
           <button onClick={loadHistory} className="text-xs text-[var(--color-k3)] px-3 py-1.5 rounded-lg border border-[var(--color-border)] bg-white">
             历史
           </button>
@@ -259,7 +294,68 @@ export default function Agent() {
             </button>
           )}
         </div>
-        <p className="text-[13px] text-[var(--color-k2)]">基于知识库的智能问答 · 分析 · 整理</p>
+
+        {/* TTS 语音设置面板 */}
+        {showTtsSettings && (
+          <div className="mt-2 bg-white rounded-xl border border-[var(--color-border)] p-3 fade-in">
+            <div className="text-xs font-bold text-[var(--color-k)] mb-2">语音设置</div>
+
+            {/* 语音选择 */}
+            <div className="mb-3">
+              <div className="text-[11px] text-[var(--color-k3)] mb-1">选择语音 {ttsVoices.length > 0 ? `(${ttsVoices.length}个可用)` : '(加载中…)'}</div>
+              <div className="flex flex-col gap-1.5 max-h-[150px] overflow-y-auto">
+                {ttsVoices.map((voice, idx) => (
+                  <button
+                    key={idx}
+                    onClick={() => {
+                      setTtsVoiceIdx(idx)
+                      localStorage.setItem('tts_voice_idx', String(idx))
+                      // 试听
+                      window.speechSynthesis.cancel()
+                      const u = new SpeechSynthesisUtterance('你好，这是语音试听效果')
+                      u.voice = voice
+                      u.lang = voice.lang
+                      u.rate = ttsRate
+                      window.speechSynthesis.speak(u)
+                    }}
+                    className={`text-left text-[12px] px-3 py-2 rounded-lg border transition-colors ${
+                      idx === ttsVoiceIdx
+                        ? 'border-[var(--color-pri)] bg-[var(--color-pri-light)] text-[var(--color-pri)] font-medium'
+                        : 'border-[var(--color-border)] text-[var(--color-k2)]'
+                    }`}
+                  >
+                    <div className="font-medium">{voice.name}</div>
+                    <div className="text-[10px] text-[var(--color-k3)] mt-0.5">{voice.lang} {voice.localService ? '· 本地' : '· 在线'}</div>
+                  </button>
+                ))}
+                {ttsVoices.length === 0 && (
+                  <div className="text-[11px] text-[var(--color-k3)] py-2">未检测到中文语音，将使用系统默认</div>
+                )}
+              </div>
+            </div>
+
+            {/* 语速调节 */}
+            <div>
+              <div className="text-[11px] text-[var(--color-k3)] mb-1">语速：{ttsRate.toFixed(1)}x</div>
+              <div className="flex items-center gap-2">
+                <span className="text-[10px] text-[var(--color-k3)]">慢</span>
+                <input
+                  type="range" min="0.5" max="2.0" step="0.1"
+                  value={ttsRate}
+                  onChange={e => {
+                    const v = parseFloat(e.target.value)
+                    setTtsRate(v)
+                    localStorage.setItem('tts_rate', String(v))
+                  }}
+                  className="flex-1 h-1 accent-[var(--color-pri)]"
+                />
+                <span className="text-[10px] text-[var(--color-k3)]">快</span>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {!showTtsSettings && <p className="text-[13px] text-[var(--color-k2)]">基于知识库的智能问答 · 分析 · 整理</p>}
       </div>
 
       {/* Chat Area */}
