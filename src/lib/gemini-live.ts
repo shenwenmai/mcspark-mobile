@@ -108,31 +108,25 @@ export class GeminiLiveSession {
       }))
     }
 
-    this.ws.onmessage = (e) => {
+    this.ws.onmessage = async (e) => {
       try {
-        // e.data 可能是 string 或 ArrayBuffer (移动端)
         let text: string
-        if (typeof e.data === 'string') {
+        const dataType = typeof e.data
+        if (dataType === 'string') {
           text = e.data
         } else if (e.data instanceof ArrayBuffer) {
           text = new TextDecoder().decode(e.data)
         } else if (e.data instanceof Blob) {
-          // 不应该走到这里（已设 binaryType=arraybuffer），但防御一下
-          e.data.text().then(t => {
-            try { this.handleMsg(JSON.parse(t)) } catch (err) {
-              console.warn('[GeminiLive] Blob消息处理失败:', err instanceof Error ? err.message : err)
-            }
-          })
-          return
+          text = await e.data.text()
         } else {
-          console.warn('[GeminiLive] 未知消息类型:', typeof e.data)
+          console.warn('[GeminiLive] 未知数据类型:' + dataType)
           return
         }
+        console.log('[GeminiLive] 收到(' + dataType + '):' + text.substring(0, 200))
         const data = JSON.parse(text)
         this.handleMsg(data)
       } catch (err) {
-        const msg = err instanceof Error ? err.message : String(err)
-        console.warn('[GeminiLive] WS消息处理失败:', msg)
+        console.warn('[GeminiLive] 处理失败:' + (err instanceof Error ? err.message : String(err)))
       }
     }
 

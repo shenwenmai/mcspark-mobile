@@ -21,9 +21,13 @@ export default function VoiceChat({ onClose }: Props) {
     const origWarn = console.warn
     const origErr = console.error
     const addLog = (prefix: string, args: unknown[]) => {
-      const msg = args.map(a => typeof a === 'string' ? a : JSON.stringify(a)?.substring(0, 200)).join(' ')
-      if (msg.includes('GeminiLive') || msg.includes('gemini')) {
-        setDebugLogs(prev => [...prev.slice(-8), `${prefix} ${msg.substring(0, 150)}`])
+      const msg = args.map(a => {
+        if (typeof a === 'string') return a
+        if (a instanceof Error) return a.message
+        try { return JSON.stringify(a)?.substring(0, 200) } catch { return String(a) }
+      }).join(' ')
+      if (msg.includes('GeminiLive') || msg.includes('gemini') || msg.includes('Gemini')) {
+        setDebugLogs(prev => [...prev.slice(-12), `${prefix} ${msg.substring(0, 200)}`])
       }
     }
     console.log = (...args: unknown[]) => { origLog(...args); addLog('📝', args) }
