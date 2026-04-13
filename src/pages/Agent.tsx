@@ -42,6 +42,7 @@ export default function Agent() {
 
   const scrollRef = useRef<HTMLDivElement>(null)
   const inputRef = useRef<HTMLTextAreaElement>(null)
+  const sendAbortRef = useRef<AbortController | null>(null)
 
   // ── TTS 播报 ──
   const ttsAbortRef = useRef<AbortController | null>(null)
@@ -175,6 +176,16 @@ export default function Agent() {
     setTimeout(() => setToast(''), duration)
   }
 
+  // ── 取消发送 ──
+  const cancelSend = () => {
+    if (sendAbortRef.current) {
+      sendAbortRef.current.abort()
+      sendAbortRef.current = null
+    }
+    setLoading(false)
+    showToast('已取消')
+  }
+
   // ── 发送消息 ──
   const send = async (text?: string, taskType?: string) => {
     const msg = (text || input).trim()
@@ -191,6 +202,9 @@ export default function Agent() {
       inputRef.current.style.height = 'auto'
     }
 
+    const abort = new AbortController()
+    sendAbortRef.current = abort
+
     try {
       // 取最近5轮对话作为上下文
       const recentMessages = [...messages, userMsg]
@@ -202,7 +216,7 @@ export default function Agent() {
         task_type: (taskType as 'chat') || 'chat',
         source: 'mobile',
         history: recentMessages.slice(0, -1), // 不包含当前这条（已在 instruction 中）
-      })
+      }, abort.signal)
 
       const agentMsg: ChatMessage = {
         role: 'agent',
@@ -218,6 +232,10 @@ export default function Agent() {
         showToast('Agent 执行出错', 3000)
       }
     } catch (e) {
+      if ((e as Error).name === 'AbortError') {
+        // 用户主动取消，不显示错误消息
+        return
+      }
       const errMsg = (e as Error).message
       const agentMsg: ChatMessage = {
         role: 'agent',
@@ -226,9 +244,10 @@ export default function Agent() {
       }
       setMessages(prev => [...prev, agentMsg])
       showToast('调用失败', 3000)
+    } finally {
+      sendAbortRef.current = null
+      setLoading(false)
     }
-
-    setLoading(false)
   }
 
   // ── 加载历史 ──
@@ -730,13 +749,22 @@ export default function Agent() {
             className="flex-1 text-[15px] leading-relaxed px-4 py-3 rounded-2xl border border-[var(--color-border)] bg-[var(--color-bg)] resize-none outline-none focus:border-[var(--color-pri)] placeholder:text-[var(--color-k3)] transition-colors disabled:opacity-50"
             style={{ maxHeight: '120px' }}
           />
-          <button
-            onClick={() => send()}
-            disabled={loading || !input.trim()}
-            className="shrink-0 w-12 h-12 rounded-2xl bg-[var(--color-pri)] text-white flex items-center justify-center text-lg font-bold disabled:opacity-40 active:scale-95 transition-transform"
-          >
-            {loading ? '⏳' : '↑'}
-          </button>
+          {loading ? (
+            <button
+              onClick={cancelSend}
+              className="shrink-0 w-12 h-12 rounded-2xl bg-red-500 text-white flex items-center justify-center text-lg font-bold active:scale-95 transition-transform"
+            >
+              ✕
+            </button>
+          ) : (
+            <button
+              onClick={() => send()}
+              disabled={!input.trim()}
+              className="shrink-0 w-12 h-12 rounded-2xl bg-[var(--color-pri)] text-white flex items-center justify-center text-lg font-bold disabled:opacity-40 active:scale-95 transition-transform"
+            >
+              ↑
+            </button>
+          )}
         </div>
       </div>
 

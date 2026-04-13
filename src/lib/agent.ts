@@ -50,7 +50,7 @@ export interface AgentTask {
 }
 
 // ── 调用 Agent Edge Function ──
-export async function executeAgent(req: AgentRequest): Promise<AgentResponse> {
+export async function executeAgent(req: AgentRequest, signal?: AbortSignal): Promise<AgentResponse> {
   const sb = getSupabase()
   if (!sb) throw new Error('Supabase 未连接')
 
@@ -75,6 +75,7 @@ export async function executeAgent(req: AgentRequest): Promise<AgentResponse> {
       source: req.source || 'mobile',
       history: req.history || [],
     }),
+    signal,
   })
 
   if (!res.ok) {
