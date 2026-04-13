@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect } from 'react'
+import { useState, useRef, useEffect, useCallback } from 'react'
 import ReactMarkdown from 'react-markdown'
 import { executeAgent, fetchAgentTasks, QUICK_COMMANDS, type AgentTask, type AgentResponse } from '../lib/agent'
 import { captureItem } from '../lib/db'
@@ -11,6 +11,25 @@ interface ChatMessage {
   relatedItems?: Array<{ id: string; title: string }>
   timestamp: number
 }
+
+// ── TTS 工具函数 ──
+function stripMarkdown(text: string): string {
+  return text
+    .replace(/```[\s\S]*?```/g, '') // 去掉代码块
+    .replace(/`[^`]*`/g, '')        // 去掉行内代码
+    .replace(/#{1,6}\s*/g, '')      // 去掉标题符号
+    .replace(/\*\*([^*]+)\*\*/g, '$1') // 去掉加粗
+    .replace(/\*([^*]+)\*/g, '$1')     // 去掉斜体
+    .replace(/~~([^~]+)~~/g, '$1')     // 去掉删除线
+    .replace(/>\s*/g, '')              // 去掉引用
+    .replace(/\[([^\]]+)\]\([^)]+\)/g, '$1') // 链接只留文字
+    .replace(/[|\-]{3,}/g, '')         // 去掉表格分隔线
+    .replace(/\n{3,}/g, '\n\n')        // 压缩多余空行
+    .replace(/❌|✅|💾|📊|🔍|🏷️|💡|📝|🧹|⏱|📚|🔤/g, '') // 去掉 emoji
+    .trim()
+}
+
+type TtsState = 'idle' | 'playing' | 'paused'
 
 export default function Agent() {
   const [messages, setMessages] = useState<ChatMessage[]>(() => {
@@ -25,6 +44,11 @@ export default function Agent() {
   const [history, setHistory] = useState<AgentTask[]>([])
   const [historyLoading, setHistoryLoading] = useState(false)
   const [toast, setToast] = useState('')
+
+  // ── TTS 状态 ──
+  const [ttsState, setTtsState] = useState<TtsState>('idle')
+  const [ttsIndex, setTtsIndex] = useState<number>(-1) // 正在朗读哪条消息
+  const ttsUtterRef = useRef<SpeechSynthesisUtterance | null>(null)
 
   const scrollRef = useRef<HTMLDivElement>(null)
   const inputRef = useRef<HTMLTextAreaElement>(null)
@@ -45,6 +69,54 @@ export default function Agent() {
     setToast(msg)
     setTimeout(() => setToast(''), duration)
   }
+
+  // ── TTS 语音朗读 ──
+  const ttsPlay = useCallback((text: string, msgIndex: number) => {
+    // 先停掉之前的
+    window.speechSynthesis.cancel()
+
+    const clean = stripMarkdown(text)
+    if (!clean) return
+
+    const utter = new SpeechSynthesisUtterance(clean)
+    utter.lang = 'zh-CN'
+    utter.rate = 1.0
+    utter.pitch = 1.0
+
+    // 尝试选一个中文语音
+    const voices = window.speechSynthesis.getVoices()
+    const zhVoice = voices.find(v => v.lang.startsWith('zh')) || voices.find(v => v.lang.includes('CN'))
+    if (zhVoice) utter.voice = zhVoice
+
+    utter.onend = () => { setTtsState('idle'); setTtsIndex(-1) }
+    utter.onerror = () => { setTtsState('idle'); setTtsIndex(-1) }
+
+    ttsUtterRef.current = utter
+    setTtsState('playing')
+    setTtsIndex(msgIndex)
+    window.speechSynthesis.speak(utter)
+  }, [])
+
+  const ttsPause = useCallback(() => {
+    window.speechSynthesis.pause()
+    setTtsState('paused')
+  }, [])
+
+  const ttsResume = useCallback(() => {
+    window.speechSynthesis.resume()
+    setTtsState('playing')
+  }, [])
+
+  const ttsStop = useCallback(() => {
+    window.speechSynthesis.cancel()
+    setTtsState('idle')
+    setTtsIndex(-1)
+  }, [])
+
+  // 组件卸载时停止朗读
+  useEffect(() => {
+    return () => { window.speechSynthesis.cancel() }
+  }, [])
 
   // ── 发送消息 ──
   const send = async (text?: string, taskType?: string) => {
@@ -258,13 +330,48 @@ export default function Agent() {
                     </div>
                   )}
 
-                  {/* 存入知识库按钮 */}
+                  {/* 操作按钮：朗读 + 存入知识库 */}
                   {msg.role === 'agent' && msg.text && !msg.text.startsWith('❌') && (
-                    <div className="mt-2 pt-2 border-t border-[var(--color-border)]">
+                    <div className="mt-2 pt-2 border-t border-[var(--color-border)] flex items-center gap-2 flex-wrap">
+                      {/* TTS 朗读按钮 */}
+                      {ttsState === 'idle' || ttsIndex !== i ? (
+                        <button
+                          onClick={() => { if (ttsIndex !== -1) ttsStop(); ttsPlay(msg.text, i) }}
+                          className="text-[11px] text-[var(--color-k2)] bg-[var(--color-bg)] px-3 py-1.5 rounded-full active:scale-95 transition-transform font-medium"
+                        >
+                          🔊 朗读
+                        </button>
+                      ) : (
+                        <>
+                          {ttsState === 'playing' && (
+                            <button
+                              onClick={ttsPause}
+                              className="text-[11px] text-amber-600 bg-amber-50 px-3 py-1.5 rounded-full active:scale-95 transition-transform font-medium"
+                            >
+                              ⏸ 暂停
+                            </button>
+                          )}
+                          {ttsState === 'paused' && (
+                            <button
+                              onClick={ttsResume}
+                              className="text-[11px] text-green-600 bg-green-50 px-3 py-1.5 rounded-full active:scale-95 transition-transform font-medium"
+                            >
+                              ▶ 继续
+                            </button>
+                          )}
+                          <button
+                            onClick={ttsStop}
+                            className="text-[11px] text-red-500 bg-red-50 px-3 py-1.5 rounded-full active:scale-95 transition-transform font-medium"
+                          >
+                            ⏹ 停止
+                          </button>
+                        </>
+                      )}
+
+                      {/* 存入知识库 */}
                       <button
                         onClick={async () => {
                           try {
-                            // 从 AI 回复中提取前20字作为标题
                             const titleMatch = msg.text.replace(/^#+\s*/, '').split('\n')[0]
                             const title = (titleMatch || 'Agent 回复').substring(0, 50)
                             await captureItem({
