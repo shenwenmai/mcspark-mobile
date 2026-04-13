@@ -37,9 +37,63 @@ export default function Agent() {
   const [reminderDays, setReminderDays] = useState<number[]>([1, 2, 3, 4, 5])
   const [showVoiceChat, setShowVoiceChat] = useState(false)
   const [addingReminder, setAddingReminder] = useState(false)
+  const [playingMsgIdx, setPlayingMsgIdx] = useState(-1)
+  const ttsAudioRef = useRef<HTMLAudioElement | null>(null)
 
   const scrollRef = useRef<HTMLDivElement>(null)
   const inputRef = useRef<HTMLTextAreaElement>(null)
+
+  // ── TTS 播报 ──
+  const stopTts = () => {
+    if (ttsAudioRef.current) {
+      ttsAudioRef.current.pause()
+      ttsAudioRef.current.src = ''
+      ttsAudioRef.current = null
+    }
+    setPlayingMsgIdx(-1)
+  }
+
+  const playTts = async (text: string, idx: number) => {
+    stopTts()
+    const sbUrl = localStorage.getItem('sb_url')
+    const sbKey = localStorage.getItem('sb_key')
+    if (!sbUrl || !sbKey) { showToast('Supabase 未配置'); return }
+
+    // 清理 Markdown
+    const clean = text
+      .replace(/#{1,6}\s*/g, '')
+      .replace(/\*{1,2}([^*]+)\*{1,2}/g, '$1')
+      .replace(/`[^`]*`/g, '')
+      .replace(/\[([^\]]+)\]\([^)]+\)/g, '$1')
+      .replace(/[>\-•·]/g, '')
+      .replace(/\n{2,}/g, '。')
+      .replace(/\n/g, '，')
+      .trim()
+
+    if (!clean) return
+
+    setPlayingMsgIdx(idx)
+
+    try {
+      const res = await fetch(`${sbUrl}/functions/v1/tts`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${sbKey}`, 'apikey': sbKey },
+        body: JSON.stringify({ text: clean }),
+      })
+      if (!res.ok) { showToast('播报失败'); setPlayingMsgIdx(-1); return }
+
+      const blob = await res.blob()
+      const url = URL.createObjectURL(blob)
+      const audio = new Audio(url)
+      ttsAudioRef.current = audio
+      audio.onended = () => { URL.revokeObjectURL(url); ttsAudioRef.current = null; setPlayingMsgIdx(-1) }
+      audio.onerror = () => { URL.revokeObjectURL(url); ttsAudioRef.current = null; setPlayingMsgIdx(-1) }
+      await audio.play()
+    } catch {
+      showToast('播报异常')
+      setPlayingMsgIdx(-1)
+    }
+  }
 
   // 保存聊天记录到 localStorage
   useEffect(() => {
@@ -573,9 +627,21 @@ export default function Agent() {
                     </div>
                   )}
 
-                  {/* 存入知识库 */}
+                  {/* 播报 + 存入知识库 */}
                   {msg.role === 'agent' && msg.text && !msg.text.startsWith('❌') && (
                     <div className="mt-2 pt-2 border-t border-[var(--color-border)] flex items-center gap-2">
+                      <button
+                        onClick={() => {
+                          if (playingMsgIdx === i) { stopTts() } else { playTts(msg.text, i) }
+                        }}
+                        className={`text-[11px] px-3 py-1.5 rounded-full active:scale-95 transition-transform font-medium ${
+                          playingMsgIdx === i
+                            ? 'text-green-600 bg-green-50'
+                            : 'text-[var(--color-k3)] bg-[var(--color-bg)]'
+                        }`}
+                      >
+                        {playingMsgIdx === i ? '⏹ 停止' : '🔊 播报'}
+                      </button>
                       <button
                         onClick={async () => {
                           try {
