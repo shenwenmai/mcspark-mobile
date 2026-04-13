@@ -14,7 +14,11 @@ export interface LiveCallbacks {
 const WS_BASE = 'wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContent'
 const INPUT_RATE = 16000
 const OUTPUT_RATE = 24000
-const MODEL = 'models/gemini-2.0-flash-live-001'
+const MODELS = [
+  'models/gemini-2.5-flash-preview-native-audio-dialog',
+  'models/gemini-2.0-flash-live-001',
+  'models/gemini-2.0-flash-exp',
+]
 
 export class GeminiLiveSession {
   private ws: WebSocket | null = null
@@ -34,7 +38,16 @@ export class GeminiLiveSession {
 
   get state() { return this._state }
 
+  private modelIndex = 0
+  private apiKey = ''
+  private systemPrompt = ''
+  private voiceName = 'Kore'
+
   async start(apiKey: string, systemPrompt: string, voiceName = 'Kore') {
+    this.apiKey = apiKey
+    this.systemPrompt = systemPrompt
+    this.voiceName = voiceName
+    this.modelIndex = 0
     this.setState('connecting')
 
     try {
@@ -47,54 +60,86 @@ export class GeminiLiveSession {
       this.audioCtx = new AudioContext()
       if (this.audioCtx.state === 'suspended') await this.audioCtx.resume()
 
-      // 3. WebSocket
-      this.ws = new WebSocket(`${WS_BASE}?key=${apiKey}`)
-
-      this.ws.onopen = () => {
-        this.ws!.send(JSON.stringify({
-          setup: {
-            model: MODEL,
-            generationConfig: {
-              responseModalities: ['AUDIO'],
-              speechConfig: {
-                voiceConfig: {
-                  prebuiltVoiceConfig: { voiceName }
-                }
-              }
-            },
-            systemInstruction: {
-              parts: [{ text: systemPrompt }]
-            }
-          }
-        }))
-      }
-
-      this.ws.onmessage = (e) => {
-        try {
-          const data = JSON.parse(e.data)
-          this.handleMsg(data)
-        } catch { /* ignore parse errors */ }
-      }
-
-      this.ws.onerror = () => {
-        this.cb.onError('WebSocket 连接失败，请检查 API Key')
-        this.setState('error')
-      }
-
-      this.ws.onclose = (e) => {
-        if (this._state !== 'closed' && this._state !== 'error') {
-          if (e.code !== 1000) {
-            this.cb.onError(`连接断开 (${e.code})`)
-            this.setState('error')
-          } else {
-            this.setState('closed')
-          }
-        }
-      }
+      // 3. 尝试连接（自动降级模型）
+      this.tryConnect()
 
     } catch (e) {
       this.cb.onError('麦克风访问失败: ' + (e as Error).message)
       this.setState('error')
+    }
+  }
+
+  private tryConnect() {
+    const model = MODELS[this.modelIndex]
+    if (!model) {
+      this.cb.onError('所有模型均不可用，请检查 API Key 权限')
+      this.setState('error')
+      return
+    }
+
+    console.log(`[GeminiLive] 尝试模型: ${model}`)
+
+    // 关闭旧连接
+    if (this.ws && this.ws.readyState <= 1) {
+      this.ws.onclose = null
+      this.ws.onerror = null
+      this.ws.close()
+    }
+
+    this.ws = new WebSocket(`${WS_BASE}?key=${this.apiKey}`)
+
+    this.ws.onopen = () => {
+      console.log(`[GeminiLive] WS已连接，发送setup: ${model}`)
+      this.ws!.send(JSON.stringify({
+        setup: {
+          model,
+          generationConfig: {
+            responseModalities: ['AUDIO'],
+            speechConfig: {
+              voiceConfig: {
+                prebuiltVoiceConfig: { voiceName: this.voiceName }
+              }
+            }
+          },
+          systemInstruction: {
+            parts: [{ text: this.systemPrompt }]
+          }
+        }
+      }))
+    }
+
+    this.ws.onmessage = (e) => {
+      try {
+        const data = JSON.parse(e.data)
+        this.handleMsg(data)
+      } catch { /* ignore parse errors */ }
+    }
+
+    this.ws.onerror = (ev) => {
+      console.error('[GeminiLive] WS error:', ev)
+    }
+
+    this.ws.onclose = (e) => {
+      console.log(`[GeminiLive] WS关闭: code=${e.code} reason=${e.reason}`)
+      if (this._state === 'closed') return
+
+      // 1008 = Policy Violation（模型不可用），尝试下一个模型
+      if (e.code === 1008 && this.modelIndex < MODELS.length - 1) {
+        console.log(`[GeminiLive] 模型 ${model} 不可用，尝试下一个...`)
+        this.modelIndex++
+        this.tryConnect()
+        return
+      }
+
+      if (this._state !== 'error') {
+        if (e.code !== 1000) {
+          const reason = e.reason || (e.code === 1008 ? '模型不可用或API Key无Live权限' : '未知原因')
+          this.cb.onError(`连接断开 (${e.code}): ${reason}`)
+          this.setState('error')
+        } else {
+          this.setState('closed')
+        }
+      }
     }
   }
 
