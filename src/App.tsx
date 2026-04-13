@@ -204,7 +204,6 @@ export default function App() {
   const [tab, setTab] = useState<Tab>('capture')
   const [refreshKey, setRefreshKey] = useState(0)
   const remindersRef = useRef<TaskReminder[]>([])
-  const [reminderDebug, setReminderDebug] = useState('')
   const [activeAlert, setActiveAlert] = useState<{ title: string; time: string } | null>(null)
 
   // ── 全局提醒检查器（不依赖任何 tab） ──
@@ -219,10 +218,10 @@ export default function App() {
     // 加载提醒
     fetchReminders().then(r => {
       remindersRef.current = r
-      setReminderDebug(`已加载${r.length}个提醒`)
+      console.log(`[Reminder] 已加载${r.length}个提醒`)
     }).catch(e => {
       console.warn('[Reminder] 加载失败:', e)
-      setReminderDebug('加载失败: ' + (e as Error).message)
+      console.warn('[Reminder] 加载失败:', (e as Error).message)
     })
 
     // 定期刷新提醒列表（同步 Agent 页新增的）
@@ -248,7 +247,7 @@ export default function App() {
       const nowStr = `${String(now.getHours()).padStart(2,'0')}:${String(now.getMinutes()).padStart(2,'0')}`
 
       if (list.length === 0) {
-        setReminderDebug(`${nowStr} | 0个提醒`)
+        console.log(`[Reminder] ${nowStr} | 0个提醒`)
         return
       }
 
@@ -321,7 +320,7 @@ export default function App() {
           console.warn('[Reminder] 更新触发状态失败:', e)
         }
       }
-      setReminderDebug(debugParts.join(' | '))
+      console.log('[Reminder]', debugParts.join(' | '))
     }
 
     const timer = setInterval(checkReminders, 15000)
@@ -357,18 +356,6 @@ export default function App() {
         }} />}
       </div>
 
-      {/* 提醒状态条 */}
-      {reminderDebug && (
-        <div className="shrink-0 bg-gray-900 px-3 py-1 flex items-center gap-2">
-          <div className="flex-1 text-[9px] text-green-400 font-mono truncate">⏰ {reminderDebug}</div>
-          <button
-            onClick={() => setActiveAlert({ title: '测试提醒', time: new Date().toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' }) })}
-            className="text-[9px] text-yellow-400 bg-yellow-400/10 px-2 py-0.5 rounded shrink-0"
-          >
-            测试
-          </button>
-        </div>
-      )}
 
       {/* 提醒弹窗（应用内，不依赖浏览器 Notification API） */}
       {activeAlert && (
