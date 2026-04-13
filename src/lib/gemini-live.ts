@@ -86,6 +86,7 @@ export class GeminiLiveSession {
     }
 
     this.ws = new WebSocket(`${WS_BASE}?key=${this.apiKey}`)
+    this.ws.binaryType = 'arraybuffer'
 
     this.ws.onopen = () => {
       console.log(`[GeminiLive] WS已连接，发送setup: ${model}`)
@@ -109,9 +110,30 @@ export class GeminiLiveSession {
 
     this.ws.onmessage = (e) => {
       try {
-        const data = JSON.parse(e.data)
+        // e.data 可能是 string 或 ArrayBuffer (移动端)
+        let text: string
+        if (typeof e.data === 'string') {
+          text = e.data
+        } else if (e.data instanceof ArrayBuffer) {
+          text = new TextDecoder().decode(e.data)
+        } else if (e.data instanceof Blob) {
+          // 不应该走到这里（已设 binaryType=arraybuffer），但防御一下
+          e.data.text().then(t => {
+            try { this.handleMsg(JSON.parse(t)) } catch (err) {
+              console.warn('[GeminiLive] Blob消息处理失败:', err instanceof Error ? err.message : err)
+            }
+          })
+          return
+        } else {
+          console.warn('[GeminiLive] 未知消息类型:', typeof e.data)
+          return
+        }
+        const data = JSON.parse(text)
         this.handleMsg(data)
-      } catch (e) { console.warn('[GeminiLive] WS消息解析失败:', e) }
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err)
+        console.warn('[GeminiLive] WS消息处理失败:', msg)
+      }
     }
 
     this.ws.onerror = (ev) => {

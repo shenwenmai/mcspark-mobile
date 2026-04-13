@@ -150,6 +150,7 @@ export default function App() {
   const [tab, setTab] = useState<Tab>('capture')
   const [refreshKey, setRefreshKey] = useState(0)
   const remindersRef = useRef<TaskReminder[]>([])
+  const [reminderDebug, setReminderDebug] = useState('')
 
   // ── 全局提醒检查器（不依赖任何 tab） ──
   useEffect(() => {
@@ -161,40 +162,61 @@ export default function App() {
     }
 
     // 加载提醒
-    fetchReminders().then(r => { remindersRef.current = r }).catch(e => console.warn('[Reminder] 加载失败:', e))
+    fetchReminders().then(r => {
+      remindersRef.current = r
+      setReminderDebug(`已加载${r.length}个提醒`)
+    }).catch(e => {
+      console.warn('[Reminder] 加载失败:', e)
+      setReminderDebug('加载失败: ' + (e as Error).message)
+    })
 
     // 定期刷新提醒列表（同步 Agent 页新增的）
     let lastRefresh = 0
     const refreshList = async () => {
-      try { remindersRef.current = await fetchReminders() } catch (e) { console.warn('[Reminder] 刷新失败:', e) }
-      lastRefresh = Date.now()
+      try {
+        remindersRef.current = await fetchReminders()
+        lastRefresh = Date.now()
+      } catch (e) { console.warn('[Reminder] 刷新失败:', e) }
     }
 
     const checkReminders = async () => {
-      // 每 2 分钟刷新一次列表，确保 Agent 页新增的提醒能被检测到
+      // 每 2 分钟刷新一次列表
       if (Date.now() - lastRefresh > 120000) {
         await refreshList()
       }
 
       const list = remindersRef.current
-      if (list.length === 0) return
-
       const now = new Date()
       const nowMinutes = now.getHours() * 60 + now.getMinutes()
       const currentDay = now.getDay()
       const today = now.toISOString().split('T')[0]
+      const nowStr = `${String(now.getHours()).padStart(2,'0')}:${String(now.getMinutes()).padStart(2,'0')}`
+      const notifPerm = 'Notification' in window ? Notification.permission : 'N/A'
 
+      if (list.length === 0) {
+        setReminderDebug(`${nowStr} | 0个提醒 | 通知:${notifPerm}`)
+        return
+      }
+
+      // 调试：显示每个提醒的匹配状态
+      const debugParts: string[] = [`${nowStr} 周${currentDay} | ${list.length}个 | 通知:${notifPerm}`]
       for (const r of list) {
-        if (!r.enabled) continue
-        if (!r.repeat_days.includes(currentDay)) continue
-        if (r.last_triggered_date === today) continue
+        if (!r.enabled) { debugParts.push(`${r.remind_time} 禁用`); continue }
+        if (!r.repeat_days.includes(currentDay)) { debugParts.push(`${r.remind_time} 今天不重复`); continue }
+        if (r.last_triggered_date === today) { debugParts.push(`${r.remind_time} 今天已触发`); continue }
 
         const [hh, mm] = r.remind_time.split(':').map(Number)
         const reminderMinutes = hh * 60 + mm
         const diff = nowMinutes - reminderMinutes
-        if (diff < 0 || diff > 3) continue
 
-        // 浏览器系统通知
+        if (diff < 0 || diff > 3) {
+          debugParts.push(`${r.remind_time} 差${diff}分钟(未到)`)
+          continue
+        }
+
+        // 匹配！触发通知
+        debugParts.push(`${r.remind_time} ✅触发!`)
+
         if ('Notification' in window && Notification.permission === 'granted') {
           new Notification('⏰ ' + r.title, {
             body: `提醒时间：${r.remind_time}`,
@@ -204,7 +226,6 @@ export default function App() {
           })
         }
 
-        // 写入通知表
         await createNotification({
           type: 'reminder',
           title: '⏰ ' + r.title,
@@ -214,6 +235,7 @@ export default function App() {
         await updateReminderApi(r.id, { last_triggered_date: today })
         r.last_triggered_date = today
       }
+      setReminderDebug(debugParts.join(' | '))
     }
 
     const timer = setInterval(checkReminders, 15000)
@@ -248,6 +270,13 @@ export default function App() {
           setTab('capture')
         }} />}
       </div>
+
+      {/* 提醒调试条 */}
+      {reminderDebug && (
+        <div className="shrink-0 bg-gray-900 px-3 py-1">
+          <div className="text-[9px] text-green-400 font-mono truncate">⏰ {reminderDebug}</div>
+        </div>
+      )}
 
       {/* Bottom Nav */}
       <nav className="shrink-0 bg-white border-t border-[var(--color-border)] pb-safe">
