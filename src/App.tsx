@@ -1,5 +1,6 @@
-import { useState } from 'react'
+import { useState, useEffect, useRef } from 'react'
 import { isConfigured, getSupabase } from './lib/supabase'
+import { fetchReminders, updateReminder as updateReminderApi, createNotification, type TaskReminder } from './lib/agent'
 import Login from './pages/Login'
 import Capture from './pages/Capture'
 import Tasks from './pages/Tasks'
@@ -148,6 +149,77 @@ export default function App() {
   const [ready, setReady] = useState(isConfigured())
   const [tab, setTab] = useState<Tab>('capture')
   const [refreshKey, setRefreshKey] = useState(0)
+  const remindersRef = useRef<TaskReminder[]>([])
+
+  // ── 全局提醒检查器（不依赖任何 tab） ──
+  useEffect(() => {
+    if (!isConfigured()) return
+
+    // 请求通知权限
+    if ('Notification' in window && Notification.permission === 'default') {
+      Notification.requestPermission()
+    }
+
+    // 加载提醒
+    fetchReminders().then(r => { remindersRef.current = r }).catch(() => {})
+
+    const checkReminders = async () => {
+      const list = remindersRef.current
+      if (list.length === 0) {
+        // 每次检查也尝试重新加载（可能用户在 Agent 页新增了）
+        try { remindersRef.current = await fetchReminders() } catch {}
+        return
+      }
+
+      const now = new Date()
+      const nowMinutes = now.getHours() * 60 + now.getMinutes()
+      const currentDay = now.getDay()
+      const today = now.toISOString().split('T')[0]
+
+      for (const r of list) {
+        if (!r.enabled) continue
+        if (!r.repeat_days.includes(currentDay)) continue
+        if (r.last_triggered_date === today) continue
+
+        const [hh, mm] = r.remind_time.split(':').map(Number)
+        const reminderMinutes = hh * 60 + mm
+        const diff = nowMinutes - reminderMinutes
+        if (diff < 0 || diff > 3) continue
+
+        // 浏览器系统通知
+        if ('Notification' in window && Notification.permission === 'granted') {
+          new Notification('⏰ ' + r.title, {
+            body: `提醒时间：${r.remind_time}`,
+            icon: '/favicon.svg',
+            tag: r.id,
+            requireInteraction: true,
+          })
+        }
+
+        // 写入通知表
+        await createNotification({
+          type: 'reminder',
+          title: '⏰ ' + r.title,
+          content: `定时提醒：${r.title}\n时间：${r.remind_time}`,
+        })
+
+        await updateReminderApi(r.id, { last_triggered_date: today })
+        r.last_triggered_date = today
+      }
+    }
+
+    const timer = setInterval(checkReminders, 15000)
+    const onVisible = () => {
+      if (document.visibilityState === 'visible') checkReminders()
+    }
+    document.addEventListener('visibilitychange', onVisible)
+    checkReminders()
+
+    return () => {
+      clearInterval(timer)
+      document.removeEventListener('visibilitychange', onVisible)
+    }
+  }, [ready])
 
   if (!ready) {
     return <Login onDone={() => setReady(true)} />

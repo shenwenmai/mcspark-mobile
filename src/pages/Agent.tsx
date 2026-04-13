@@ -1,6 +1,6 @@
 import { useState, useRef, useEffect, useCallback } from 'react'
 import ReactMarkdown from 'react-markdown'
-import { executeAgent, fetchAgentTasks, fetchNotifications, markNotificationRead, markAllNotificationsRead, fetchReminders, createReminder, updateReminder as updateReminderApi, deleteReminder as deleteReminderApi, createNotification, QUICK_COMMANDS, type AgentTask, type AgentResponse, type AgentNotification, type TaskReminder } from '../lib/agent'
+import { executeAgent, fetchAgentTasks, fetchNotifications, markNotificationRead, markAllNotificationsRead, fetchReminders, createReminder, updateReminder as updateReminderApi, deleteReminder as deleteReminderApi, QUICK_COMMANDS, type AgentTask, type AgentResponse, type AgentNotification, type TaskReminder } from '../lib/agent'
 import { captureItem } from '../lib/db'
 import VoiceChat from '../components/VoiceChat'
 
@@ -54,7 +54,7 @@ export default function Agent() {
   const [reminderTitle, setReminderTitle] = useState('')
   const [reminderTime, setReminderTime] = useState('09:00')
   const [reminderDays, setReminderDays] = useState<number[]>([1, 2, 3, 4, 5])
-  const remindersRef = useRef<TaskReminder[]>([])
+  // remindersRef removed — 提醒检查已移到 App.tsx 全局
   const [showVoiceChat, setShowVoiceChat] = useState(false)
 
   // ── TTS 状态 ──
@@ -92,102 +92,11 @@ export default function Agent() {
     fetchNotifications(true).then(setNotifications).catch(() => {})
   }, [])
 
-  // ── 浏览器通知权限 + 定时提醒检查器 ──
-  useEffect(() => { remindersRef.current = reminders }, [reminders])
-
+  // ── 加载提醒列表（检查逻辑已移到 App.tsx 全局运行） ──
   useEffect(() => {
-    // 请求通知权限
-    if ('Notification' in window && Notification.permission === 'default') {
-      Notification.requestPermission()
-    }
-
-    // 加载提醒列表
     fetchReminders().then(r => {
       setReminders(r)
-      remindersRef.current = r
     }).catch(() => {})
-
-    // ── 核心检查函数：时间窗口匹配（±3分钟） ──
-    const checkReminders = async () => {
-      const list = remindersRef.current
-      if (list.length === 0) return
-
-      const now = new Date()
-      const nowMinutes = now.getHours() * 60 + now.getMinutes() // 当前分钟数
-      const currentDay = now.getDay()
-      const today = now.toISOString().split('T')[0]
-
-      for (const r of list) {
-        if (!r.enabled) continue
-        if (!r.repeat_days.includes(currentDay)) continue
-        if (r.last_triggered_date === today) continue
-
-        // 解析提醒时间为分钟数
-        const [hh, mm] = r.remind_time.split(':').map(Number)
-        const reminderMinutes = hh * 60 + mm
-
-        // 时间窗口：提醒时间 ≤ 当前时间 ≤ 提醒时间+3分钟
-        const diff = nowMinutes - reminderMinutes
-        if (diff < 0 || diff > 3) continue
-
-        // 触发浏览器系统通知
-        if ('Notification' in window && Notification.permission === 'granted') {
-          new Notification('⏰ ' + r.title, {
-            body: `提醒时间：${r.remind_time}`,
-            icon: '/favicon.svg',
-            tag: r.id,
-            requireInteraction: true,
-          })
-        }
-
-        // 写入通知表（🔔 铃铛也能看到）
-        await createNotification({
-          type: 'reminder',
-          title: '⏰ ' + r.title,
-          content: `定时提醒：${r.title}\n时间：${r.remind_time}`,
-        })
-
-        // 标记今天已触发
-        await updateReminderApi(r.id, { last_triggered_date: today })
-        r.last_triggered_date = today
-      }
-
-      // 同时拉取新通知（含 cron 推送的）
-      try {
-        const fresh = await fetchNotifications(true)
-        if (fresh.length > 0) {
-          setNotifications(fresh)
-          for (const n of fresh) {
-            if ('Notification' in window && Notification.permission === 'granted') {
-              new Notification(n.title, {
-                body: n.content.substring(0, 100),
-                icon: '/favicon.svg',
-                tag: n.id,
-              })
-            }
-          }
-        }
-      } catch { /* ignore */ }
-    }
-
-    // 每 15 秒检查一次（对抗浏览器节流）
-    const timer = setInterval(checkReminders, 15000)
-
-    // 页面回到前台时立即检查（手机切回浏览器时）
-    const onVisible = () => {
-      if (document.visibilityState === 'visible') {
-        checkReminders()
-      }
-    }
-    document.addEventListener('visibilitychange', onVisible)
-
-    // 首次立即检查
-    checkReminders()
-
-    return () => {
-      clearInterval(timer)
-      document.removeEventListener('visibilitychange', onVisible)
-    }
   }, [])
 
   // ── 提醒管理函数 ──
@@ -614,7 +523,7 @@ export default function Agent() {
           </button>
           {/* 定时提醒 */}
           <button
-            onClick={() => { setShowReminders(true); fetchReminders().then(r => { setReminders(r); remindersRef.current = r }).catch(() => {}) }}
+            onClick={() => { setShowReminders(true); fetchReminders().then(r => { setReminders(r) }).catch(() => {}) }}
             className={`relative text-xs px-3 py-1.5 rounded-lg border border-[var(--color-border)] text-[var(--color-k3)] bg-white`}
           >
             ⏰
