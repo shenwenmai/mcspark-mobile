@@ -1,4 +1,5 @@
 import { useState, useRef, useEffect } from 'react'
+import ReactMarkdown from 'react-markdown'
 import { executeAgent, fetchAgentTasks, QUICK_COMMANDS, type AgentTask, type AgentResponse } from '../lib/agent'
 
 interface ChatMessage {
@@ -214,9 +215,15 @@ export default function Agent() {
                   : 'bg-white border border-[var(--color-border)] text-[var(--color-k)] rounded-bl-md'
                   }`}>
                   {/* 消息内容 */}
-                  <div className={`text-[14px] leading-relaxed whitespace-pre-wrap break-words ${msg.role === 'agent' ? 'agent-markdown' : ''}`}>
-                    {msg.text}
-                  </div>
+                  {msg.role === 'agent' ? (
+                    <div className="prose-agent text-[14px] leading-relaxed break-words">
+                      <ReactMarkdown>{msg.text}</ReactMarkdown>
+                    </div>
+                  ) : (
+                    <div className="text-[14px] leading-relaxed whitespace-pre-wrap break-words">
+                      {msg.text}
+                    </div>
+                  )}
 
                   {/* Agent 统计信息 */}
                   {msg.role === 'agent' && msg.stats && (
