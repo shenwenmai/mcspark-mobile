@@ -31,6 +31,7 @@ export default function VoiceChat({ onClose, chatHistory }: Props) {
     return saved !== 'false'
   })
   const [showVoicePicker, setShowVoicePicker] = useState(false)
+  const [playingIdx, setPlayingIdx] = useState<number>(-1) // 正在播报第几条
 
   const recognitionRef = useRef<SpeechRecognitionInstance | null>(null)
   const timerRef = useRef<number>(0)
@@ -56,6 +57,7 @@ export default function VoiceChat({ onClose, chatHistory }: Props) {
       audioRef.current.src = ''
       audioRef.current = null
     }
+    setPlayingIdx(-1)
   }, [])
 
   // Edge TTS 语音播报（通过 Supabase Edge Function 代理）
@@ -130,6 +132,14 @@ export default function VoiceChat({ onClose, chatHistory }: Props) {
     }
   }, [ttsEnabled])
 
+  // 手动播报某条 AI 回复
+  const playEntry = useCallback(async (text: string, idx: number) => {
+    stopSpeaking()
+    setPlayingIdx(idx)
+    await speak(text)
+    setPlayingIdx(-1)
+  }, [speak, stopSpeaking])
+
   // 发送到 Agent 后端
   const sendToAgent = useCallback(async (userText: string) => {
     if (isProcessingRef.current) return
@@ -166,9 +176,13 @@ export default function VoiceChat({ onClose, chatHistory }: Props) {
       setTranscript([...transcriptRef.current])
       setCurrentReply(replyText)
 
-      // 语音播报
-      setState('speaking')
-      await speak(replyText)
+      // 自动语音播报
+      if (ttsEnabled) {
+        setState('speaking')
+        setPlayingIdx(transcriptRef.current.length - 1)
+        await speak(replyText)
+        setPlayingIdx(-1)
+      }
 
     } catch (e) {
       const errMsg = (e as Error).message
@@ -469,11 +483,35 @@ export default function VoiceChat({ onClose, chatHistory }: Props) {
                 ) : (
                   <div className="bg-white/10 rounded-2xl rounded-bl-md px-4 py-3">
                     <div className="text-white/90 text-[15px] leading-relaxed whitespace-pre-wrap">{entry.text}</div>
-                    {entry.stats && (
-                      <div className="text-[11px] text-white/25 mt-2">
-                        ⏱{(entry.stats.duration_ms / 1000).toFixed(1)}s · 📚检索{entry.stats.context_items}条 · 🔤{entry.stats.input_tokens + entry.stats.output_tokens} tokens
-                      </div>
-                    )}
+                    {/* 播放按钮 + 统计 */}
+                    <div className="flex items-center gap-3 mt-2">
+                      <button
+                        onClick={() => {
+                          if (playingIdx === i) {
+                            stopSpeaking()
+                            setPlayingIdx(-1)
+                          } else {
+                            playEntry(entry.text, i)
+                          }
+                        }}
+                        className={`text-xs px-3 py-1.5 rounded-full flex items-center gap-1 active:scale-95 transition-transform ${
+                          playingIdx === i
+                            ? 'bg-green-500/30 text-green-300'
+                            : 'bg-white/10 text-white/50'
+                        }`}
+                      >
+                        {playingIdx === i ? (
+                          <><span className="inline-block w-1.5 h-1.5 bg-green-400 rounded-full animate-pulse" /> 播报中…</>
+                        ) : (
+                          <>🔊 播报</>
+                        )}
+                      </button>
+                      {entry.stats && (
+                        <span className="text-[11px] text-white/20">
+                          ⏱{(entry.stats.duration_ms / 1000).toFixed(1)}s · 📚{entry.stats.context_items}条
+                        </span>
+                      )}
+                    </div>
                     {entry.relatedItems && entry.relatedItems.length > 0 && (
                       <div className="flex flex-wrap gap-1 mt-2">
                         {entry.relatedItems.slice(0, 4).map(item => (
