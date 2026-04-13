@@ -10,9 +10,25 @@ const GEMINI_KEY = Deno.env.get('GEMINI_API_KEY') || ''
 const GEMINI_MODEL = 'gemini-2.5-flash'
 const GEMINI_URL = `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent?key=${GEMINI_KEY}`
 
-async function callGemini(prompt: string, systemInstruction?: string) {
+async function callGemini(prompt: string, systemInstruction?: string, history?: Array<{ role: string; text: string }>) {
+  // 构建多轮对话 contents
+  const contents: Array<{ role: string; parts: Array<{ text: string }> }> = []
+
+  // 加入对话历史（最近几轮）
+  if (history && history.length > 0) {
+    for (const h of history) {
+      contents.push({
+        role: h.role === 'user' ? 'user' : 'model',
+        parts: [{ text: h.text }],
+      })
+    }
+  }
+
+  // 加入当前用户消息
+  contents.push({ role: 'user', parts: [{ text: prompt }] })
+
   const body: Record<string, unknown> = {
-    contents: [{ parts: [{ text: prompt }] }],
+    contents,
     generationConfig: { temperature: 0.7, maxOutputTokens: 8192 },
   }
   if (systemInstruction) {
@@ -166,8 +182,9 @@ async function handleRequest(req: Request): Promise<Response> {
     const authHeader = req.headers.get('Authorization') || ''
     const sb = getSupabase(authHeader)
     const body = await req.json()
-    let { instruction, task_type = 'chat', context = {}, source = 'mobile', task_id } = body as {
+    let { instruction, task_type = 'chat', context = {}, source = 'mobile', task_id, history = [] } = body as {
       instruction: string; task_type?: string; context?: Record<string, unknown>; source?: string; task_id?: string
+      history?: Array<{ role: string; text: string }>
     }
     if (!instruction || instruction.trim().length === 0) {
       return new Response(JSON.stringify({ error: '指令不能为空' }), { status: 400, headers: { ...corsHeaders, 'Content-Type': 'application/json' } })
@@ -201,7 +218,7 @@ async function handleRequest(req: Request): Promise<Response> {
 
     const { items: vaultItems, total } = await fetchVaultContext(sb, instruction, task_type, contextLimit)
     const systemPrompt = buildSystemPrompt(task_type, vaultItems, total)
-    const geminiResult = await callGemini(instruction, systemPrompt)
+    const geminiResult = await callGemini(instruction, systemPrompt, history)
     const duration = Date.now() - startTime
     if (taskId) {
       await sb.from('agent_logs').insert({

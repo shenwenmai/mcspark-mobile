@@ -1,11 +1,17 @@
 import { getSupabase } from './supabase'
 
 // ── 类型定义 ──
+export interface ChatHistoryItem {
+  role: 'user' | 'agent'
+  text: string
+}
+
 export interface AgentRequest {
   instruction: string
   task_type?: 'chat' | 'analyze' | 'summarize' | 'organize' | 'digest' | 'custom'
   context?: Record<string, unknown>
   source?: string
+  history?: ChatHistoryItem[]
 }
 
 export interface AgentRelatedItem {
@@ -65,6 +71,7 @@ export async function executeAgent(req: AgentRequest): Promise<AgentResponse> {
       task_type: req.task_type || 'chat',
       context: req.context || {},
       source: req.source || 'mobile',
+      history: req.history || [],
     }),
   })
 

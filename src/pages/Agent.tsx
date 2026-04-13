@@ -1,6 +1,7 @@
 import { useState, useRef, useEffect } from 'react'
 import ReactMarkdown from 'react-markdown'
 import { executeAgent, fetchAgentTasks, QUICK_COMMANDS, type AgentTask, type AgentResponse } from '../lib/agent'
+import { captureItem } from '../lib/db'
 
 interface ChatMessage {
   role: 'user' | 'agent'
@@ -62,10 +63,16 @@ export default function Agent() {
     }
 
     try {
+      // 取最近5轮对话作为上下文
+      const recentMessages = [...messages, userMsg]
+        .slice(-10) // 最多10条（5轮）
+        .map(m => ({ role: m.role, text: m.text.substring(0, 500) }))
+
       const res = await executeAgent({
         instruction: msg,
         task_type: (taskType as 'chat') || 'chat',
         source: 'mobile',
+        history: recentMessages.slice(0, -1), // 不包含当前这条（已在 instruction 中）
       })
 
       const agentMsg: ChatMessage = {
@@ -248,6 +255,33 @@ export default function Agent() {
                           <span className="text-[10px] text-[var(--color-k3)]">+{msg.relatedItems.length - 5}</span>
                         )}
                       </div>
+                    </div>
+                  )}
+
+                  {/* 存入知识库按钮 */}
+                  {msg.role === 'agent' && msg.text && !msg.text.startsWith('❌') && (
+                    <div className="mt-2 pt-2 border-t border-[var(--color-border)]">
+                      <button
+                        onClick={async () => {
+                          try {
+                            // 从 AI 回复中提取前20字作为标题
+                            const titleMatch = msg.text.replace(/^#+\s*/, '').split('\n')[0]
+                            const title = (titleMatch || 'Agent 回复').substring(0, 50)
+                            await captureItem({
+                              title,
+                              content: msg.text,
+                              source: 'agent',
+                              category: 'note',
+                            })
+                            showToast('✅ 已存入知识库')
+                          } catch (e) {
+                            showToast('❌ 存入失败: ' + (e as Error).message, 3000)
+                          }
+                        }}
+                        className="text-[11px] text-[var(--color-pri)] bg-[var(--color-pri-light)] px-3 py-1.5 rounded-full active:scale-95 transition-transform font-medium"
+                      >
+                        💾 存入知识库
+                      </button>
                     </div>
                   )}
 
